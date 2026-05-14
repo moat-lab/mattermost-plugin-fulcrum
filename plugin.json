@@ -1,0 +1,19 @@
+{
+    "id": "fulcrum",
+    "name": "Fulcrum",
+    "description": "Slash commands and interactive cards for the Fulcrum CLI. Calls fulcrum verbs over a remote rexecd gRPC sidecar.",
+    "homepage_url": "https://github.com/Mouriya-Emma/mattermost-plugin-fulcrum",
+    "support_url": "https://github.com/Mouriya-Emma/mattermost-plugin-fulcrum/issues",
+    "icon_path": "",
+    "version": "0.1.0",
+    "min_server_version": "9.11.0",
+    "server": {
+        "executables": {
+            "linux-amd64": "server/dist/plugin-linux-amd64",
+            "linux-arm64": "server/dist/plugin-linux-arm64",
+            "darwin-amd64": "server/dist/plugin-darwin-amd64",
+            "darwin-arm64": "server/dist/plugin-darwin-arm64",
+            "windows-amd64": "server/dist/plugin-windows-amd64.exe"
+        }
+    }
+}
