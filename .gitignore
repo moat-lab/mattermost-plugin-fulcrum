@@ -1,0 +1,6 @@
+.coder-loop/runtime/logs/
+.coder-loop/runtime/events/
+.coder-loop/runtime/evidence/
+.coder-loop/runtime/state.json.bak.*
+.dev-loop
+.dev-trace.txt
