@@ -4,3 +4,8 @@
 .coder-loop/runtime/state.json.bak.*
 .dev-loop
 .dev-trace.txt
+
+# Build artifacts
+/dist/
+/server/dist/
+/build/pluginctl/pluginctl
