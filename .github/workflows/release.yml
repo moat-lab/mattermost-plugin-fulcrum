@@ -1,0 +1,58 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: [self-hosted, vctcn, linux, netbird, vctcn-runner]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: Verify tag matches plugin.json version
+        run: |
+          set -euo pipefail
+          MANIFEST_VERSION="$(awk -F'"' '/"version"/ {print $4; exit}' plugin.json)"
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          echo "manifest=${MANIFEST_VERSION} tag=${TAG_VERSION}"
+          if [ "${MANIFEST_VERSION}" != "${TAG_VERSION}" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} does not match plugin.json version ${MANIFEST_VERSION}" >&2
+            exit 1
+          fi
+
+      - name: Build plugin bundle
+        run: make dist
+
+      - name: Locate bundle
+        id: bundle
+        run: |
+          set -euo pipefail
+          BUNDLE="$(ls dist/fulcrum-*.tar.gz)"
+          echo "path=${BUNDLE}" >> "$GITHUB_OUTPUT"
+          echo "name=$(basename "${BUNDLE}")" >> "$GITHUB_OUTPUT"
+          sha256sum "${BUNDLE}" | tee "${BUNDLE}.sha256"
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "${GITHUB_REF_NAME}" \
+            "${{ steps.bundle.outputs.path }}" \
+            "${{ steps.bundle.outputs.path }}.sha256" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "${GITHUB_REF_NAME}" \
+            --generate-notes
