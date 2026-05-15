@@ -5,23 +5,27 @@ import (
 	"testing"
 )
 
-func TestRenderEnvelope_Success(t *testing.T) {
+// TestRenderEnvelope_GenericFallback covers verbs that don't yet have a
+// per-verb renderer (issue #8-#19 will retire each one in turn). Until those
+// land, the plugin must fall back to a pretty-printed JSON dump so users see
+// CLI output rather than a render error.
+func TestRenderEnvelope_GenericFallback(t *testing.T) {
 	in := []byte(`{
 		"success": true,
 		"data": {
 			"schema_version": 1,
-			"verb": "dashboard",
-			"active_tasks": 6
+			"verb": "tasks.list",
+			"total": 7
 		}
 	}`)
 	att, err := renderEnvelope(in)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if att.Title != "fulcrum dashboard" {
+	if att.Title != "fulcrum tasks.list" {
 		t.Fatalf("title: %q", att.Title)
 	}
-	if !strings.Contains(att.Text, "\"active_tasks\": 6") {
+	if !strings.Contains(att.Text, "\"total\": 7") {
 		t.Fatalf("pretty body missing field: %q", att.Text)
 	}
 }

@@ -11,6 +11,10 @@ import (
 )
 
 const (
+	// manifestID mirrors plugin.json#id. It is hard-coded because the value
+	// is part of the URL contract — Mattermost mounts the plugin at
+	// /plugins/<manifestID>/ regardless of where this binary is compiled.
+	manifestID     = "fulcrum"
 	botUsername    = "fulcrum"
 	botDisplayName = "Fulcrum"
 	botDescription = "Fulcrum slash + interactive cards"
