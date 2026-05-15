@@ -147,7 +147,18 @@ func (p *Plugin) ExecuteCommand(_ *plugin.Context, args *model.CommandArgs) (*mo
 		return ephemeral("fulcrum error: " + stderr), nil
 	}
 
-	att, renderErr := renderEnvelopeAtForActor(res.Stdout, time.Now(), args.UserId)
+	// apps.logs surfaces a subset of business-error codes ephemerally per
+	// spike §B.8.5 (app_not_found, service_not_found). Other codes — notably
+	// logs_unavailable — fall through to the renderer so the user sees a
+	// colorError card with Refresh + Back to app instead of a one-line
+	// ephemeral. Check before rendering so we don't create a bot post that
+	// only the slashing user can see contextualized.
+	if verb, errCode, errMsg, parseErr := parseEnvelopeOutcome(res.Stdout); parseErr == nil && verb == "apps.logs" && appLogsEphemeralCodes[errCode] {
+		hints, argvAppID := extractAppLogsHints(argv)
+		return ephemeral(appLogsBusinessErrorMessage(errCode, errMsg, argvAppID, hints.RequestedService)), nil
+	}
+
+	att, renderErr := renderEnvelopeAtForRequest(res.Stdout, time.Now(), args.UserId, argv)
 	if renderErr != nil {
 		return ephemeral(fmt.Sprintf("render error: %v (raw: %s)", renderErr, truncate(string(res.Stdout), 200))), nil
 	}

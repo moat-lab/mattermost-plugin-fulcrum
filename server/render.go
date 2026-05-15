@@ -39,21 +39,32 @@ type envelopeData struct {
 // once every CLI verb has a feature_id sub-issue merged (umbrella
 // mattermost-plugin-fulcrum#6).
 func renderEnvelope(stdout []byte) (*model.SlackAttachment, error) {
-	return renderEnvelopeAtForActor(stdout, time.Now(), "")
+	return renderEnvelopeAtForRequest(stdout, time.Now(), "", nil)
 }
 
 // renderEnvelopeAt is renderEnvelope with the wall clock injected for tests
 // that need a stable Pretext / relative-time output.
 func renderEnvelopeAt(stdout []byte, now time.Time) (*model.SlackAttachment, error) {
-	return renderEnvelopeAtForActor(stdout, now, "")
+	return renderEnvelopeAtForRequest(stdout, now, "", nil)
 }
 
-// renderEnvelopeAtForActor extends renderEnvelopeAt with the Mattermost user
-// id of the human who triggered the underlying CLI invocation. App mutation
-// verbs (apps.deploy/stop/rollback) surface this as the §B.7.1 "Initiated by"
-// field; verbs whose render layer doesn't expose an actor pass "" and the
-// renderer collapses the field to "—".
+// renderEnvelopeAtForActor preserves the legacy 3-arg entry point used by
+// callers that don't carry the invoking argv. New callers should prefer
+// renderEnvelopeAtForRequest so apps.logs gets the request-derived tail /
+// service hints (spike §B.8 — the CLI envelope omits both fields).
 func renderEnvelopeAtForActor(stdout []byte, now time.Time, actorUserID string) (*model.SlackAttachment, error) {
+	return renderEnvelopeAtForRequest(stdout, now, actorUserID, nil)
+}
+
+// renderEnvelopeAtForRequest is the canonical render entry point: it adds the
+// invoking argv on top of renderEnvelopeAtForActor so verbs whose render
+// surface depends on request context (today: apps.logs, which spike §B.8
+// renders with `tail=<n>` pretext + footer and a Tail more button that
+// doubles the current tail) can pull what they need without round-tripping
+// through the central dispatcher. `requestArgv` may be nil — callers that
+// don't have the argv (e.g. unit tests, generic re-renders) fall back to the
+// renderer's own defaults.
+func renderEnvelopeAtForRequest(stdout []byte, now time.Time, actorUserID string, requestArgv []string) (*model.SlackAttachment, error) {
 	if len(stdout) == 0 {
 		return nil, errors.New("empty stdout from fulcrum CLI")
 	}
@@ -69,6 +80,10 @@ func renderEnvelopeAtForActor(stdout []byte, now time.Time, actorUserID string) 
 		return nil, fmt.Errorf("unsupported schema_version %d (plugin understands 1)", data.SchemaVersion)
 	}
 	if code, msg, ok := envelopeErrorObject(data.Error); ok {
+		if data.Verb == "apps.logs" {
+			hints, argvAppID := extractAppLogsHints(requestArgv)
+			return renderAppLogsBusinessError(appIDForLogsError(env.Data, argvAppID), code, msg, hints), nil
+		}
 		return renderBusinessError(data.Verb, code, msg), nil
 	}
 
@@ -83,9 +98,25 @@ func renderEnvelopeAtForActor(stdout []byte, now time.Time, actorUserID string) 
 		return renderAppDetail(env.Data, now)
 	case "apps.deploy", "apps.stop", "apps.rollback":
 		return renderAppMutationResult(data.Verb, env.Data, now, actorUserID)
+	case "apps.logs":
+		hints, _ := extractAppLogsHints(requestArgv)
+		return renderAppLogs(env.Data, hints)
 	default:
 		return renderGenericVerb(data.Verb, env.Data)
 	}
+}
+
+// appIDForLogsError prefers the app_id field embedded in the envelope's data
+// (the CLI emits it even for business-error responses per cli/JSON_SCHEMA.md
+// §apps.logs) and falls back to the argv-derived id when the envelope omits
+// it — that fallback keeps the §B.8.5 colorError card titled correctly even
+// against an older CLI that doesn't populate app_id on error.
+func appIDForLogsError(raw json.RawMessage, argvAppID string) string {
+	var p appsLogsPayload
+	if err := json.Unmarshal(raw, &p); err == nil && p.AppID != "" {
+		return p.AppID
+	}
+	return argvAppID
 }
 
 // parseEnvelopeOutcome decodes only the routing fields of a CLI envelope:

@@ -207,6 +207,24 @@ func (p *Plugin) handleDialog(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if errCode != "" {
+		// apps.logs `logs_unavailable` is the only known business-error code
+		// that should land as a colorError card rather than ephemeral text
+		// (spike §B.8.5). Fall through to applyEnvelopeToPost so the renderer
+		// produces the card; other apps.logs codes (app_not_found,
+		// service_not_found) and every other verb stay ephemeral.
+		if verb == "apps.logs" && !appLogsEphemeralCodes[errCode] {
+			if err := applyEnvelopeToPostWithRequest(client, botID, st.PostID, res.Stdout, userID, st.Argv); err != nil {
+				sendDialogEphemeral(client, botID, st.ChannelID, userID, err.Error())
+			}
+			writeDialogOK(w)
+			return
+		}
+		if verb == "apps.logs" {
+			hints, argvAppID := extractAppLogsHints(st.Argv)
+			sendDialogEphemeral(client, botID, st.ChannelID, userID, appLogsBusinessErrorMessage(errCode, errMsg, argvAppID, hints.RequestedService))
+			writeDialogOK(w)
+			return
+		}
 		sendDialogEphemeral(client, botID, st.ChannelID, userID, verbBusinessErrorMessage(verb, errCode, errMsg))
 		writeDialogOK(w)
 		return
@@ -241,7 +259,7 @@ func (p *Plugin) handleDialog(w http.ResponseWriter, r *http.Request) {
 			sendDialogEphemeral(client, botID, st.ChannelID, userID, err.Error())
 		}
 	default:
-		if err := applyEnvelopeToPost(client, botID, st.PostID, res.Stdout, userID); err != nil {
+		if err := applyEnvelopeToPostWithRequest(client, botID, st.PostID, res.Stdout, userID, st.Argv); err != nil {
 			sendDialogEphemeral(client, botID, st.ChannelID, userID, err.Error())
 		}
 	}
