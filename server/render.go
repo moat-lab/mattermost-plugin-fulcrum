@@ -62,9 +62,38 @@ func renderEnvelopeAt(stdout []byte, now time.Time) (*model.SlackAttachment, err
 	switch data.Verb {
 	case "dashboard":
 		return renderDashboard(env.Data, now)
+	case "tasks.get":
+		return renderTaskDetail(env.Data, now)
 	default:
 		return renderGenericVerb(data.Verb, env.Data)
 	}
+}
+
+// parseEnvelopeOutcome decodes only the routing fields of a CLI envelope:
+// verb + business error (when present). /action and /dialog use it to decide
+// ephemeral-vs-UpdatePost before calling the per-verb renderer (per spike
+// §B.3.5: button-triggered failures must not overwrite the original card).
+// The data RawMessage is returned alongside so callers can hand it to the
+// renderer without re-parsing the outer envelope a second time.
+func parseEnvelopeOutcome(stdout []byte) (verb, errCode, errMsg string, err error) {
+	if len(stdout) == 0 {
+		return "", "", "", errors.New("empty stdout from fulcrum CLI")
+	}
+	var env envelope
+	if jsonErr := json.Unmarshal(stdout, &env); jsonErr != nil {
+		return "", "", "", fmt.Errorf("envelope: %w", jsonErr)
+	}
+	var data envelopeData
+	if jsonErr := json.Unmarshal(env.Data, &data); jsonErr != nil {
+		return "", "", "", fmt.Errorf("envelope.data: %w", jsonErr)
+	}
+	if data.SchemaVersion != 1 {
+		return data.Verb, "", "", fmt.Errorf("unsupported schema_version %d (plugin understands 1)", data.SchemaVersion)
+	}
+	if data.Error != nil {
+		return data.Verb, data.Error.Code, data.Error.Message, nil
+	}
+	return data.Verb, "", "", nil
 }
 
 // renderBusinessError is the §0.5 envelope-error form: a non-ephemeral bot
