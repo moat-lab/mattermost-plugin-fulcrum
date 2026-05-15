@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/mattermost/mattermost/server/public/model"
@@ -18,14 +19,17 @@ type envelope struct {
 
 // envelopeData is the payload subset the plugin needs for routing. The full
 // payload is preserved verbatim in `data` so per-verb renderers can decode
-// the rest of the fields themselves.
+// the rest of the fields themselves. `Error` is a RawMessage rather than a
+// strict {code,message} struct because the CLI's apps.deploy/stop/rollback
+// verbs emit `error: "<text>" | null` (operation-level error, see
+// cli/src/commands/mattermost-verbs.ts:663) which collides with the canonical
+// envelope-error object shape. `envelopeErrorObject` decodes only the
+// canonical object shape and treats string/null/missing as "no envelope
+// error" so the per-verb renderer can interpret payload-level errors itself.
 type envelopeData struct {
-	SchemaVersion int    `json:"schema_version"`
-	Verb          string `json:"verb"`
-	Error         *struct {
-		Code    string `json:"code"`
-		Message string `json:"message"`
-	} `json:"error"`
+	SchemaVersion int             `json:"schema_version"`
+	Verb          string          `json:"verb"`
+	Error         json.RawMessage `json:"error"`
 }
 
 // renderEnvelope converts CLI stdout into a SlackAttachment ready to attach
@@ -35,12 +39,21 @@ type envelopeData struct {
 // once every CLI verb has a feature_id sub-issue merged (umbrella
 // mattermost-plugin-fulcrum#6).
 func renderEnvelope(stdout []byte) (*model.SlackAttachment, error) {
-	return renderEnvelopeAt(stdout, time.Now())
+	return renderEnvelopeAtForActor(stdout, time.Now(), "")
 }
 
 // renderEnvelopeAt is renderEnvelope with the wall clock injected for tests
 // that need a stable Pretext / relative-time output.
 func renderEnvelopeAt(stdout []byte, now time.Time) (*model.SlackAttachment, error) {
+	return renderEnvelopeAtForActor(stdout, now, "")
+}
+
+// renderEnvelopeAtForActor extends renderEnvelopeAt with the Mattermost user
+// id of the human who triggered the underlying CLI invocation. App mutation
+// verbs (apps.deploy/stop/rollback) surface this as the §B.7.1 "Initiated by"
+// field; verbs whose render layer doesn't expose an actor pass "" and the
+// renderer collapses the field to "—".
+func renderEnvelopeAtForActor(stdout []byte, now time.Time, actorUserID string) (*model.SlackAttachment, error) {
 	if len(stdout) == 0 {
 		return nil, errors.New("empty stdout from fulcrum CLI")
 	}
@@ -55,8 +68,8 @@ func renderEnvelopeAt(stdout []byte, now time.Time) (*model.SlackAttachment, err
 	if data.SchemaVersion != 1 {
 		return nil, fmt.Errorf("unsupported schema_version %d (plugin understands 1)", data.SchemaVersion)
 	}
-	if data.Error != nil {
-		return renderBusinessError(data.Verb, data.Error.Code, data.Error.Message), nil
+	if code, msg, ok := envelopeErrorObject(data.Error); ok {
+		return renderBusinessError(data.Verb, code, msg), nil
 	}
 
 	switch data.Verb {
@@ -66,17 +79,23 @@ func renderEnvelopeAt(stdout []byte, now time.Time) (*model.SlackAttachment, err
 		return renderTaskDetail(env.Data, now)
 	case "apps.list":
 		return renderAppsOverview(env.Data, now)
+	case "apps.get":
+		return renderAppDetail(env.Data, now)
+	case "apps.deploy", "apps.stop", "apps.rollback":
+		return renderAppMutationResult(data.Verb, env.Data, now, actorUserID)
 	default:
 		return renderGenericVerb(data.Verb, env.Data)
 	}
 }
 
 // parseEnvelopeOutcome decodes only the routing fields of a CLI envelope:
-// verb + business error (when present). /action and /dialog use it to decide
-// ephemeral-vs-UpdatePost before calling the per-verb renderer (per spike
-// §B.3.5: button-triggered failures must not overwrite the original card).
-// The data RawMessage is returned alongside so callers can hand it to the
-// renderer without re-parsing the outer envelope a second time.
+// verb + envelope-level business error (when present). /action and /dialog
+// use it to decide ephemeral-vs-UpdatePost before calling the per-verb
+// renderer (per spike §B.3.5: button-triggered failures must not overwrite
+// the original card). The data RawMessage is returned alongside so callers
+// can hand it to the renderer without re-parsing the outer envelope a second
+// time. Payload-level errors emitted by app mutation verbs as plain strings
+// are not surfaced here — those callers must use parseAppMutationOutcome.
 func parseEnvelopeOutcome(stdout []byte) (verb, errCode, errMsg string, err error) {
 	if len(stdout) == 0 {
 		return "", "", "", errors.New("empty stdout from fulcrum CLI")
@@ -92,10 +111,36 @@ func parseEnvelopeOutcome(stdout []byte) (verb, errCode, errMsg string, err erro
 	if data.SchemaVersion != 1 {
 		return data.Verb, "", "", fmt.Errorf("unsupported schema_version %d (plugin understands 1)", data.SchemaVersion)
 	}
-	if data.Error != nil {
-		return data.Verb, data.Error.Code, data.Error.Message, nil
+	if code, msg, ok := envelopeErrorObject(data.Error); ok {
+		return data.Verb, code, msg, nil
 	}
 	return data.Verb, "", "", nil
+}
+
+// envelopeErrorObject returns the {code, message} object embedded in a
+// canonical envelope-error field. When the field is null/empty/missing or
+// holds a non-object shape (e.g. the string-shaped operation error emitted by
+// apps.deploy/stop/rollback per cli/JSON_SCHEMA.md §apps.deploy), it returns
+// ok=false so the per-verb renderer can interpret the payload itself.
+func envelopeErrorObject(raw json.RawMessage) (code, message string, ok bool) {
+	if len(raw) == 0 {
+		return "", "", false
+	}
+	s := strings.TrimSpace(string(raw))
+	if s == "" || s == "null" {
+		return "", "", false
+	}
+	if !strings.HasPrefix(s, "{") {
+		return "", "", false
+	}
+	var obj struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return "", "", false
+	}
+	return obj.Code, obj.Message, true
 }
 
 // renderBusinessError is the §0.5 envelope-error form: a non-ephemeral bot

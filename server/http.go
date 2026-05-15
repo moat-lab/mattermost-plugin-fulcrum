@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	rexec "github.com/Mouriya-Emma/rexec-go"
 	"github.com/mattermost/mattermost/server/public/model"
@@ -122,19 +123,32 @@ func (p *Plugin) handleAction(w http.ResponseWriter, r *http.Request) {
 		writeActionError(w, "render error: "+parseErr.Error())
 		return
 	}
-	// Business errors on a button-triggered verb leave the original card
-	// alone (§B.3.5): the task state didn't change, the existing buttons are
-	// still valid, and only the clicking user needs to know what failed.
+	// Envelope-shaped {code,message} business errors on a button-triggered
+	// verb leave the original card alone (§B.3.5 / §B.7.5): the entity state
+	// didn't change, the existing buttons are still valid, and only the
+	// clicking user needs to know what failed.
 	if errCode != "" {
-		writeActionError(w, tasksBusinessErrorMessage(verb, errCode, errMsg))
+		writeActionError(w, verbBusinessErrorMessage(verb, errCode, errMsg))
 		return
 	}
 
-	// Mutation verbs round-trip `tasks.get` so the rendered card carries the
-	// canonical post-mutation TaskSummary AND the refreshed `actions[]`. The
-	// fall-through render of the mutation's own envelope handles the (rare)
-	// case where the second CLI call fails — we still want to show the user
-	// something, just without the freshly-derived action set.
+	// App mutation verbs (apps.deploy/stop/rollback) emit operation-level
+	// failure as `{success:false, error:"<text>"}` in the payload, not as the
+	// canonical envelope error object. Surface those ephemerally for the same
+	// reason as §B.7.5: the original card's buttons are still valid because
+	// the app state didn't transition.
+	if appMutationVerbs[verb] {
+		if _, outcome, ok := parseAppMutationOutcome(res.Stdout); ok && !outcome.Success {
+			writeActionError(w, appsPayloadErrorMessage(verb, outcome))
+			return
+		}
+	}
+
+	// Task mutation verbs round-trip `tasks.get` so the rendered card carries
+	// the canonical post-mutation TaskSummary AND the refreshed `actions[]`.
+	// The fall-through render of the mutation's own envelope handles the
+	// (rare) case where the second CLI call fails — we still want to show
+	// the user something, just without the freshly-derived action set.
 	if taskMutationVerbs[verb] {
 		if err := refreshTaskPost(ctx, p, client, rc, botID, req.PostID, taskIDFromArgv(argvFromContext(req.Context)), res.Stdout); err != nil {
 			writeActionError(w, err.Error())
@@ -144,13 +158,43 @@ func (p *Plugin) handleAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Non-mutation success path (Refresh / view_diff / cross-verb buttons):
-	// render the envelope directly onto the post.
-	if err := applyEnvelopeToPost(client, botID, req.PostID, res.Stdout); err != nil {
+	// App round-trip mutations (apps.stop) re-render with the canonical
+	// `apps.get` so the action set reflects the new state per spike §B.7.6.
+	// apps.deploy and apps.rollback DO NOT round-trip — their per-verb
+	// result card carries the deployment_id the user needs to act on.
+	if appRoundTripMutationVerbs[verb] {
+		if err := refreshAppPost(ctx, p, client, rc, botID, req.PostID, appIDFromArgv(argvFromContext(req.Context)), res.Stdout, req.UserID); err != nil {
+			writeActionError(w, err.Error())
+			return
+		}
+		writeActionOK(w)
+		return
+	}
+
+	// Non-mutation success path (Refresh / view_diff / cross-verb buttons,
+	// plus apps.deploy / apps.rollback success which render the per-verb
+	// mutation result card on the same post): render the envelope directly,
+	// passing the clicking user's id so the §B.7.1 "Initiated by" mention is
+	// the actor, not the bot.
+	if err := applyEnvelopeToPost(client, botID, req.PostID, res.Stdout, req.UserID); err != nil {
 		writeActionError(w, err.Error())
 		return
 	}
 	writeActionOK(w)
+}
+
+// appsPayloadErrorMessage formats the ephemeral text shown to the clicking
+// user when an apps.* mutation envelope reports `{success:false, error:...}`
+// at the payload level (CLI emits the operation error as a string, not as
+// the canonical envelope error object — see cli/JSON_SCHEMA.md §apps.deploy).
+// Falls back to a generic "<verb>: failed (no detail)" when the CLI omits
+// the error string entirely so the user always sees that the click did
+// something even if the daemon wasn't specific.
+func appsPayloadErrorMessage(verb string, outcome appMutationPayload) string {
+	if outcome.Error != nil && *outcome.Error != "" {
+		return fmt.Sprintf("%s: %s", verb, truncate(*outcome.Error, 200))
+	}
+	return verb + ": failed (no detail)"
 }
 
 // argvFromContext returns the bare argv (no leading "fulcrum", no trailing
@@ -216,10 +260,14 @@ func actionArgv(ctx map[string]any) ([]string, error) {
 
 // applyEnvelopeToPost renders the given CLI envelope onto the existing bot
 // post and applies UpdatePost. Reused by /action's non-mutation path and as
-// the second-leg renderer of refreshTaskPost so the bot-ownership invariant
-// and the model.ParseSlackAttachment call live in one place.
-func applyEnvelopeToPost(client *pluginapi.Client, botID, postID string, stdout []byte) error {
-	att, renderErr := renderEnvelope(stdout)
+// the second-leg renderer of refreshTaskPost / refreshAppPost so the
+// bot-ownership invariant and the model.ParseSlackAttachment call live in
+// one place. `actorUserID` is the Mattermost user id of whoever triggered
+// the click — it threads through to verb renderers that surface an
+// "Initiated by" mention (apps.deploy/stop/rollback per §B.7.1); other
+// verbs ignore it.
+func applyEnvelopeToPost(client *pluginapi.Client, botID, postID string, stdout []byte, actorUserID string) error {
+	att, renderErr := renderEnvelopeAtForActor(stdout, time.Now(), actorUserID)
 	if renderErr != nil {
 		return fmt.Errorf("render error: %v", renderErr)
 	}
@@ -254,13 +302,37 @@ func refreshTaskPost(ctx context.Context, _ *Plugin, client *pluginapi.Client, r
 	if taskID != "" {
 		refreshRes, refreshErr := rc.Run(ctx, prependFulcrumJSON([]string{"tasks", "get", taskID}), rexec.WithTimeout(rexecRunTimeout))
 		if refreshErr == nil && refreshRes.ExitCode == 0 {
-			if err := applyEnvelopeToPost(client, botID, postID, refreshRes.Stdout); err == nil {
+			// Task-detail render does not surface an actor; pass "" so
+			// applyEnvelopeToPost stays in lockstep with the legacy contract.
+			if err := applyEnvelopeToPost(client, botID, postID, refreshRes.Stdout, ""); err == nil {
 				return nil
 			}
 			// fall through to the mutation envelope render below
 		}
 	}
-	return applyEnvelopeToPost(client, botID, postID, originalStdout)
+	return applyEnvelopeToPost(client, botID, postID, originalStdout, "")
+}
+
+// refreshAppPost is the post-mutation round-trip for app verbs (§B.7.6):
+// re-invoke `fulcrum apps get <id>` and render that envelope onto the
+// original post so the action set reflects the post-mutation status. The
+// fallback strategy mirrors refreshTaskPost — when the round-trip fails or
+// the appID is empty, render the mutation's own envelope directly so the
+// user sees evidence the click did something. The actor id is threaded
+// through only for the fallback path because apps.get does not surface an
+// "Initiated by" field; the round-trip render passes "" (apps.get has no
+// actor field).
+func refreshAppPost(ctx context.Context, _ *Plugin, client *pluginapi.Client, rc *rexec.Client, botID, postID, appID string, originalStdout []byte, actorUserID string) error {
+	if appID != "" {
+		refreshRes, refreshErr := rc.Run(ctx, prependFulcrumJSON([]string{"apps", "get", appID}), rexec.WithTimeout(rexecRunTimeout))
+		if refreshErr == nil && refreshRes.ExitCode == 0 {
+			if err := applyEnvelopeToPost(client, botID, postID, refreshRes.Stdout, ""); err == nil {
+				return nil
+			}
+			// fall through to the mutation envelope render below
+		}
+	}
+	return applyEnvelopeToPost(client, botID, postID, originalStdout, actorUserID)
 }
 
 type actionResponse struct {
