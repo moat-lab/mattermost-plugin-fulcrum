@@ -116,3 +116,26 @@ func TestJoinNonEmpty(t *testing.T) {
 		t.Errorf("joinNonEmpty all empty = %q", got)
 	}
 }
+
+func TestRenderMarkdownTable(t *testing.T) {
+	got := renderMarkdownTable(
+		[]string{"A", "B"},
+		[][]string{{"1", "2"}, {"3", "4"}},
+	)
+	want := "| A | B |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |"
+	if got != want {
+		t.Errorf("table mismatch:\n got: %q\nwant: %q", got, want)
+	}
+	// Short row gets right-padded with empty cells so the column grid stays
+	// intact even when the caller forgets a cell.
+	got = renderMarkdownTable(
+		[]string{"A", "B", "C"},
+		[][]string{{"1"}},
+	)
+	if !strings.Contains(got, "| 1 |  |  |") {
+		t.Errorf("short row padding mismatch: %q", got)
+	}
+	if renderMarkdownTable(nil, nil) != "" {
+		t.Errorf("empty header should produce empty string")
+	}
+}

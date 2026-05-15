@@ -160,3 +160,35 @@ func joinNonEmpty(sep string, parts ...string) string {
 	}
 	return strings.Join(out, sep)
 }
+
+// renderMarkdownTable composes a GFM-style markdown table from a header row
+// and zero-or-more data rows. Rows shorter than the header are right-padded
+// with empty cells; cells in excess of the header width are dropped. Returns
+// an empty string when headers is empty so callers can skip the Text field.
+// This is the shared table builder called out in spike §C.3 — `apps-overview`
+// is the first feature to land it, and `today-tasks-panel` / `jobs-panel` /
+// `projects-panel` will reuse it without re-deriving the row layout.
+func renderMarkdownTable(headers []string, rows [][]string) string {
+	if len(headers) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("| ")
+	b.WriteString(strings.Join(headers, " | "))
+	b.WriteString(" |\n|")
+	for range headers {
+		b.WriteString("---|")
+	}
+	for _, row := range rows {
+		normalized := make([]string, len(headers))
+		for i := range headers {
+			if i < len(row) {
+				normalized[i] = row[i]
+			}
+		}
+		b.WriteString("\n| ")
+		b.WriteString(strings.Join(normalized, " | "))
+		b.WriteString(" |")
+	}
+	return b.String()
+}
