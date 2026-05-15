@@ -64,6 +64,8 @@ func renderEnvelopeAt(stdout []byte, now time.Time) (*model.SlackAttachment, err
 		return renderDashboard(env.Data, now)
 	case "tasks.get":
 		return renderTaskDetail(env.Data, now)
+	case "apps.list":
+		return renderAppsOverview(env.Data, now)
 	default:
 		return renderGenericVerb(data.Verb, env.Data)
 	}
@@ -108,11 +110,20 @@ func renderBusinessError(verb, code, message string) *model.SlackAttachment {
 		Text:  fmt.Sprintf("`%s` %s", code, message),
 		Color: colorError,
 	}
-	if verb == "dashboard" {
+	switch verb {
+	case "dashboard":
 		att.Actions = []*model.PostAction{
 			makeAction("dashboard_refresh", "Refresh", postActionStyleDefault, []string{"dashboard"}),
 		}
 		att.Footer = "fulcrum/dashboard · schema_version=1"
+	case "apps.list":
+		// Per spike §B.6.5, business errors on apps.list (notably
+		// `backend_unavailable`) keep the Refresh button so the user can
+		// retry from the same card once the backend recovers.
+		att.Actions = []*model.PostAction{
+			makeAction("apps_overview_refresh", "Refresh", postActionStyleDefault, []string{"apps", "list"}),
+		}
+		att.Footer = "fulcrum/apps.list · schema_version=1"
 	}
 	return att
 }
