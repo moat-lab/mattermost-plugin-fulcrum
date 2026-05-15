@@ -18,6 +18,49 @@ func TestActionArgv_OK(t *testing.T) {
 	}
 }
 
+func TestArgvFromContext(t *testing.T) {
+	cases := []struct {
+		name string
+		in   map[string]any
+		want []string
+	}{
+		{"nil", nil, nil},
+		{"missing key", map[string]any{"other": 1}, nil},
+		{"non-array", map[string]any{"argv": "tasks"}, nil},
+		{"non-string element", map[string]any{"argv": []any{"tasks", 7}}, nil},
+		{"ok", map[string]any{"argv": []any{"tasks", "get", "t_1"}}, []string{"tasks", "get", "t_1"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := argvFromContext(c.in)
+			if !reflect.DeepEqual(got, c.want) {
+				t.Fatalf("got %v want %v", got, c.want)
+			}
+		})
+	}
+}
+
+func TestIsDialogClick(t *testing.T) {
+	cases := []struct {
+		name string
+		in   map[string]any
+		want bool
+	}{
+		{"nil", nil, false},
+		{"missing", map[string]any{"argv": []any{"x"}}, false},
+		{"false", map[string]any{"dialog": false}, false},
+		{"string", map[string]any{"dialog": "true"}, false},
+		{"true", map[string]any{"dialog": true}, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := isDialogClick(c.in); got != c.want {
+				t.Errorf("got %v want %v", got, c.want)
+			}
+		})
+	}
+}
+
 func TestActionArgv_Errors(t *testing.T) {
 	cases := []struct {
 		name string
