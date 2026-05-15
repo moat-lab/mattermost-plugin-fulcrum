@@ -147,7 +147,7 @@ func (p *Plugin) ExecuteCommand(_ *plugin.Context, args *model.CommandArgs) (*mo
 		return ephemeral("fulcrum error: " + stderr), nil
 	}
 
-	att, renderErr := renderEnvelope(res.Stdout)
+	att, renderErr := renderEnvelopeAtForActor(res.Stdout, time.Now(), args.UserId)
 	if renderErr != nil {
 		return ephemeral(fmt.Sprintf("render error: %v (raw: %s)", renderErr, truncate(string(res.Stdout), 200))), nil
 	}
