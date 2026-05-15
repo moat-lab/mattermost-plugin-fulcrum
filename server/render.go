@@ -94,6 +94,8 @@ func renderEnvelopeAtForRequest(stdout []byte, now time.Time, actorUserID string
 		return renderTasksList(env.Data, now)
 	case "tasks.get":
 		return renderTaskDetail(env.Data, now)
+	case "tasks.create":
+		return renderTaskQuickCreate(env.Data, now, actorUserID)
 	case "apps.list":
 		return renderAppsOverview(env.Data, now)
 	case "apps.get":
