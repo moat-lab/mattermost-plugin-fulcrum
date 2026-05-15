@@ -126,8 +126,23 @@ func (p *Plugin) handleAction(w http.ResponseWriter, r *http.Request) {
 	// Envelope-shaped {code,message} business errors on a button-triggered
 	// verb leave the original card alone (§B.3.5 / §B.7.5): the entity state
 	// didn't change, the existing buttons are still valid, and only the
-	// clicking user needs to know what failed.
+	// clicking user needs to know what failed. apps.logs is the exception:
+	// `logs_unavailable` renders as a colorError card replacing the current
+	// logs post per spike §B.8.5, so callers fall through to the renderer.
 	if errCode != "" {
+		if verb == "apps.logs" && !appLogsEphemeralCodes[errCode] {
+			if err := applyEnvelopeToPostWithRequest(client, botID, req.PostID, res.Stdout, req.UserID, argvFromContext(req.Context)); err != nil {
+				writeActionError(w, err.Error())
+				return
+			}
+			writeActionOK(w)
+			return
+		}
+		if verb == "apps.logs" {
+			hints, argvAppID := extractAppLogsHints(argvFromContext(req.Context))
+			writeActionError(w, appLogsBusinessErrorMessage(errCode, errMsg, argvAppID, hints.RequestedService))
+			return
+		}
 		writeActionError(w, verbBusinessErrorMessage(verb, errCode, errMsg))
 		return
 	}
@@ -175,8 +190,9 @@ func (p *Plugin) handleAction(w http.ResponseWriter, r *http.Request) {
 	// plus apps.deploy / apps.rollback success which render the per-verb
 	// mutation result card on the same post): render the envelope directly,
 	// passing the clicking user's id so the §B.7.1 "Initiated by" mention is
-	// the actor, not the bot.
-	if err := applyEnvelopeToPost(client, botID, req.PostID, res.Stdout, req.UserID); err != nil {
+	// the actor, not the bot. Argv is threaded through so apps.logs Refresh /
+	// Tail more re-renders carry the right tail / service hints (spike §B.8).
+	if err := applyEnvelopeToPostWithRequest(client, botID, req.PostID, res.Stdout, req.UserID, argvFromContext(req.Context)); err != nil {
 		writeActionError(w, err.Error())
 		return
 	}
@@ -259,15 +275,25 @@ func actionArgv(ctx map[string]any) ([]string, error) {
 }
 
 // applyEnvelopeToPost renders the given CLI envelope onto the existing bot
-// post and applies UpdatePost. Reused by /action's non-mutation path and as
-// the second-leg renderer of refreshTaskPost / refreshAppPost so the
-// bot-ownership invariant and the model.ParseSlackAttachment call live in
-// one place. `actorUserID` is the Mattermost user id of whoever triggered
-// the click — it threads through to verb renderers that surface an
-// "Initiated by" mention (apps.deploy/stop/rollback per §B.7.1); other
-// verbs ignore it.
+// post and applies UpdatePost. Preserves the 5-arg shape for callers (round-
+// trip refreshers) that don't carry the originating argv; new request-aware
+// callers should prefer applyEnvelopeToPostWithRequest so apps.logs renders
+// keep the right tail / service hints across UpdatePost rounds.
 func applyEnvelopeToPost(client *pluginapi.Client, botID, postID string, stdout []byte, actorUserID string) error {
-	att, renderErr := renderEnvelopeAtForActor(stdout, time.Now(), actorUserID)
+	return applyEnvelopeToPostWithRequest(client, botID, postID, stdout, actorUserID, nil)
+}
+
+// applyEnvelopeToPostWithRequest is the canonical UpdatePost helper used by
+// /action and /dialog when the originating argv is known. Reused by /action's
+// non-mutation path and as the second-leg renderer of refreshTaskPost /
+// refreshAppPost so the bot-ownership invariant and the
+// model.ParseSlackAttachment call live in one place. `actorUserID` threads
+// through to verb renderers that surface an "Initiated by" mention
+// (apps.deploy/stop/rollback per §B.7.1); other verbs ignore it.
+// `requestArgv` carries the invoking argv so apps.logs renders pick up the
+// active --tail / --service hints (spike §B.8 — CLI envelope omits both).
+func applyEnvelopeToPostWithRequest(client *pluginapi.Client, botID, postID string, stdout []byte, actorUserID string, requestArgv []string) error {
+	att, renderErr := renderEnvelopeAtForRequest(stdout, time.Now(), actorUserID, requestArgv)
 	if renderErr != nil {
 		return fmt.Errorf("render error: %v", renderErr)
 	}
