@@ -139,6 +139,18 @@ func (p *Plugin) ExecuteCommand(_ *plugin.Context, args *model.CommandArgs) (*mo
 	if err != nil {
 		return ephemeral(fmt.Sprintf("fulcrum unreachable: %v", err)), nil
 	}
+
+	// tasks.create surfaces every envelope-error code ephemerally per spike
+	// §B.4.5 — the channel can't act on a task that didn't get created, so a
+	// bot post would be noise. The CLI's MISSING_TITLE path exits with
+	// ExitCodes.INVALID_ARGS (= 2) and writes the envelope to stdout, so this
+	// check has to run before the bare exit-code ephemeral below; the
+	// CREATE_FAILED path may exit 0 (RUNTIME_ERROR is undefined in the CLI's
+	// ExitCodes enum, falling back to 0), so the same check covers it.
+	if verb, errCode, errMsg, parseErr := parseEnvelopeOutcome(res.Stdout); parseErr == nil && verb == "tasks.create" && errCode != "" {
+		return ephemeral(taskQuickCreateBusinessErrorMessage(errCode, errMsg)), nil
+	}
+
 	if res.ExitCode != 0 {
 		stderr := strings.TrimSpace(string(res.Stderr))
 		if stderr == "" {
