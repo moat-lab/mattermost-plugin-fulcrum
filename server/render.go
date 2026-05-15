@@ -90,6 +90,8 @@ func renderEnvelopeAtForRequest(stdout []byte, now time.Time, actorUserID string
 	switch data.Verb {
 	case "dashboard":
 		return renderDashboard(env.Data, now)
+	case "tasks.list":
+		return renderTasksList(env.Data, now)
 	case "tasks.get":
 		return renderTaskDetail(env.Data, now)
 	case "apps.list":

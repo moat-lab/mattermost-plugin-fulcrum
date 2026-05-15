@@ -6,26 +6,28 @@ import (
 )
 
 // TestRenderEnvelope_GenericFallback covers verbs that don't yet have a
-// per-verb renderer (issue #8-#19 will retire each one in turn). Until those
+// per-verb renderer (issue #13-#19 will retire each one in turn). Until those
 // land, the plugin must fall back to a pretty-printed JSON dump so users see
-// CLI output rather than a render error.
+// CLI output rather than a render error. `monitor` is the placeholder verb
+// while it lacks a renderer (issue #16); when that lands, switch this test to
+// another unsupported verb.
 func TestRenderEnvelope_GenericFallback(t *testing.T) {
 	in := []byte(`{
 		"success": true,
 		"data": {
 			"schema_version": 1,
-			"verb": "tasks.list",
-			"total": 7
+			"verb": "monitor",
+			"cpu": 42
 		}
 	}`)
 	att, err := renderEnvelope(in)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if att.Title != "fulcrum tasks.list" {
+	if att.Title != "fulcrum monitor" {
 		t.Fatalf("title: %q", att.Title)
 	}
-	if !strings.Contains(att.Text, "\"total\": 7") {
+	if !strings.Contains(att.Text, "\"cpu\": 42") {
 		t.Fatalf("pretty body missing field: %q", att.Text)
 	}
 }
