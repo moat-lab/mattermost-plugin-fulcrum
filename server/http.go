@@ -126,9 +126,10 @@ func (p *Plugin) handleAction(w http.ResponseWriter, r *http.Request) {
 	// Envelope-shaped {code,message} business errors on a button-triggered
 	// verb leave the original card alone (§B.3.5 / §B.7.5): the entity state
 	// didn't change, the existing buttons are still valid, and only the
-	// clicking user needs to know what failed. apps.logs is the exception:
-	// `logs_unavailable` renders as a colorError card replacing the current
-	// logs post per spike §B.8.5, so callers fall through to the renderer.
+	// clicking user needs to know what failed. apps.logs and tasks.diff are
+	// the two exceptions: `logs_unavailable` (§B.8.5) and `git_unavailable`
+	// (§B.5.5) render as colorError cards replacing the current post, so
+	// callers fall through to the renderer for those codes.
 	if errCode != "" {
 		if verb == "apps.logs" && !appLogsEphemeralCodes[errCode] {
 			if err := applyEnvelopeToPostWithRequest(client, botID, req.PostID, res.Stdout, req.UserID, argvFromContext(req.Context)); err != nil {
@@ -141,6 +142,18 @@ func (p *Plugin) handleAction(w http.ResponseWriter, r *http.Request) {
 		if verb == "apps.logs" {
 			hints, argvAppID := extractAppLogsHints(argvFromContext(req.Context))
 			writeActionError(w, appLogsBusinessErrorMessage(errCode, errMsg, argvAppID, hints.RequestedService))
+			return
+		}
+		if verb == "tasks.diff" && !taskDiffEphemeralCodes[errCode] {
+			if err := applyEnvelopeToPostWithRequest(client, botID, req.PostID, res.Stdout, req.UserID, argvFromContext(req.Context)); err != nil {
+				writeActionError(w, err.Error())
+				return
+			}
+			writeActionOK(w)
+			return
+		}
+		if verb == "tasks.diff" {
+			writeActionError(w, taskDiffBusinessErrorMessage(errCode, errMsg))
 			return
 		}
 		writeActionError(w, verbBusinessErrorMessage(verb, errCode, errMsg))

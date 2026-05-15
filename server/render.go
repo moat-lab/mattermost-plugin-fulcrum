@@ -84,6 +84,9 @@ func renderEnvelopeAtForRequest(stdout []byte, now time.Time, actorUserID string
 			hints, argvAppID := extractAppLogsHints(requestArgv)
 			return renderAppLogsBusinessError(appIDForLogsError(env.Data, argvAppID), code, msg, hints), nil
 		}
+		if data.Verb == "tasks.diff" && !taskDiffEphemeralCodes[code] {
+			return renderTaskDiffBusinessError(taskIDForDiffError(env.Data, taskDiffIDFromArgv(requestArgv)), code, msg), nil
+		}
 		return renderBusinessError(data.Verb, code, msg), nil
 	}
 
@@ -96,6 +99,8 @@ func renderEnvelopeAtForRequest(stdout []byte, now time.Time, actorUserID string
 		return renderTaskDetail(env.Data, now)
 	case "tasks.create":
 		return renderTaskQuickCreate(env.Data, now, actorUserID)
+	case "tasks.diff":
+		return renderTaskDiff(env.Data)
 	case "apps.list":
 		return renderAppsOverview(env.Data, now)
 	case "apps.get":
@@ -108,6 +113,20 @@ func renderEnvelopeAtForRequest(stdout []byte, now time.Time, actorUserID string
 	default:
 		return renderGenericVerb(data.Verb, env.Data)
 	}
+}
+
+// taskIDForDiffError prefers the task_id field embedded in the envelope's
+// data (the CLI populates it even for business-error responses per
+// cli/JSON_SCHEMA.md §tasks.diff) and falls back to the argv-derived id when
+// the envelope omits it — that fallback keeps the §B.5.5 colorError card
+// titled correctly against an older CLI build that doesn't populate task_id
+// on error.
+func taskIDForDiffError(raw json.RawMessage, argvTaskID string) string {
+	var p taskDiffPayload
+	if err := json.Unmarshal(raw, &p); err == nil && p.TaskID != "" {
+		return p.TaskID
+	}
+	return argvTaskID
 }
 
 // appIDForLogsError prefers the app_id field embedded in the envelope's data
