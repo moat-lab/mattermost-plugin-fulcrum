@@ -76,9 +76,10 @@ type dialogPrompt struct {
 }
 
 // dialogPromptFor maps argv shape → confirmation copy per spike §0.4. The
-// known shapes today are the two task-detail danger paths; the generic
-// fallback exists so future apps.* danger buttons (issue #10) can ride this
-// endpoint before customizing their copy.
+// recognized shapes today are the two task-detail danger paths and the two
+// app-detail-view danger paths (Stop and Rollback). The generic fallback
+// exists so a future danger verb still opens a usable dialog before its
+// copy lands; missing copy is a soft regression, not a runtime failure.
 func dialogPromptFor(argv []string) dialogPrompt {
 	if len(argv) >= 4 && argv[0] == "tasks" && argv[1] == "set-status" && argv[3] == "canceled" {
 		id := argv[2]
@@ -94,6 +95,23 @@ func dialogPromptFor(argv []string) dialogPrompt {
 			Title:        fmt.Sprintf("Confirm: tasks.kill-agent %s", id),
 			Introduction: fmt.Sprintf("Kill the agent attached to task `%s`?\nAny unsaved terminal state will be lost.", id),
 			SubmitLabel:  "Kill agent",
+		}
+	}
+	if len(argv) >= 3 && argv[0] == "apps" && argv[1] == "stop" {
+		id := argv[2]
+		return dialogPrompt{
+			Title:        fmt.Sprintf("Confirm: apps.stop %s", id),
+			Introduction: fmt.Sprintf("Stop app `%s`?\nThe app's services will be brought down. Use **Deploy** on the app detail to bring it back up.", id),
+			SubmitLabel:  "Stop app",
+		}
+	}
+	if len(argv) >= 4 && argv[0] == "apps" && argv[1] == "rollback" {
+		id := argv[2]
+		dep := argv[3]
+		return dialogPrompt{
+			Title:        fmt.Sprintf("Confirm: apps.rollback %s %s", id, dep),
+			Introduction: fmt.Sprintf("Roll back app `%s` to deployment `%s`?\nThe currently-running deployment will be replaced. This is reversible by deploying the latest branch again.", id, dep),
+			SubmitLabel:  "Roll back",
 		}
 	}
 	joined := strings.Join(argv, " ")
@@ -189,15 +207,43 @@ func (p *Plugin) handleDialog(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if errCode != "" {
-		sendDialogEphemeral(client, botID, st.ChannelID, userID, tasksBusinessErrorMessage(verb, errCode, errMsg))
+		sendDialogEphemeral(client, botID, st.ChannelID, userID, verbBusinessErrorMessage(verb, errCode, errMsg))
 		writeDialogOK(w)
 		return
 	}
 
-	// Successful mutation: re-render the original post with a fresh tasks.get
-	// so the action set reflects the new state (§B.3.4 round-trip rule).
-	if err := refreshTaskPost(ctx, p, client, rc, botID, st.PostID, taskIDFromArgv(st.Argv), res.Stdout); err != nil {
-		sendDialogEphemeral(client, botID, st.ChannelID, userID, err.Error())
+	// App mutation verbs emit operation-level failure as
+	// `{success:false, error:"<text>"}` in the payload (cli/JSON_SCHEMA.md
+	// §apps.deploy / stop / rollback). Surface those ephemerally per spike
+	// §B.7.5 so the original card's buttons stay valid — the app didn't
+	// actually transition.
+	if appMutationVerbs[verb] {
+		if _, outcome, ok := parseAppMutationOutcome(res.Stdout); ok && !outcome.Success {
+			sendDialogEphemeral(client, botID, st.ChannelID, userID, appsPayloadErrorMessage(verb, outcome))
+			writeDialogOK(w)
+			return
+		}
+	}
+
+	// Successful mutation: route by verb family.
+	// - Task mutations round-trip `tasks.get` (§B.3.4).
+	// - App round-trip mutations (apps.stop) round-trip `apps.get` (§B.7.6).
+	// - Other app mutations (apps.rollback today; apps.deploy is not dialog-
+	//   gated but rides this same path if it ever becomes one) render their
+	//   per-verb result card directly with the actor mention.
+	switch {
+	case taskMutationVerbs[verb]:
+		if err := refreshTaskPost(ctx, p, client, rc, botID, st.PostID, taskIDFromArgv(st.Argv), res.Stdout); err != nil {
+			sendDialogEphemeral(client, botID, st.ChannelID, userID, err.Error())
+		}
+	case appRoundTripMutationVerbs[verb]:
+		if err := refreshAppPost(ctx, p, client, rc, botID, st.PostID, appIDFromArgv(st.Argv), res.Stdout, userID); err != nil {
+			sendDialogEphemeral(client, botID, st.ChannelID, userID, err.Error())
+		}
+	default:
+		if err := applyEnvelopeToPost(client, botID, st.PostID, res.Stdout, userID); err != nil {
+			sendDialogEphemeral(client, botID, st.ChannelID, userID, err.Error())
+		}
 	}
 	writeDialogOK(w)
 }

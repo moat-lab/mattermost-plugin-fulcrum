@@ -74,12 +74,34 @@ func TestDialogPromptFor(t *testing.T) {
 		t.Errorf("kill intro: %q", got.Introduction)
 	}
 
-	// Unknown argv → generic confirmation copy.
 	got = dialogPromptFor([]string{"apps", "stop", "a_1"})
+	if !strings.Contains(got.Title, "apps.stop a_1") {
+		t.Errorf("apps.stop title: %q", got.Title)
+	}
+	if got.SubmitLabel != "Stop app" {
+		t.Errorf("apps.stop submit_label: %q", got.SubmitLabel)
+	}
+	if !strings.Contains(got.Introduction, "Stop app `a_1`") {
+		t.Errorf("apps.stop intro: %q", got.Introduction)
+	}
+
+	got = dialogPromptFor([]string{"apps", "rollback", "a_1", "d_42"})
+	if !strings.Contains(got.Title, "apps.rollback a_1 d_42") {
+		t.Errorf("apps.rollback title: %q", got.Title)
+	}
+	if got.SubmitLabel != "Roll back" {
+		t.Errorf("apps.rollback submit_label: %q", got.SubmitLabel)
+	}
+	if !strings.Contains(got.Introduction, "deployment `d_42`") {
+		t.Errorf("apps.rollback intro: %q", got.Introduction)
+	}
+
+	// Unknown argv → generic confirmation copy.
+	got = dialogPromptFor([]string{"future_verb", "do_thing", "x"})
 	if got.SubmitLabel != "Confirm" {
 		t.Errorf("generic submit_label: %q", got.SubmitLabel)
 	}
-	if !strings.Contains(got.Introduction, "apps stop a_1") {
+	if !strings.Contains(got.Introduction, "future_verb do_thing x") {
 		t.Errorf("generic intro: %q", got.Introduction)
 	}
 }
