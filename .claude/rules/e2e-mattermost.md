@@ -15,8 +15,20 @@ The age recipient is the operator's existing key (same one used by `pve-vctcn/.s
 
 ## SSO login flow (no bypass)
 
+Use the remote moat controller, not local `agent-browser`, for browser-driving
+evidence. Prefer the Netbird FQDN so the audit still works when the workstation's
+LAN path to `browser.hb.lan` is down:
+
+```bash
+export MOAT_CONTROLLER=ws://browser.mouriya.lan:3000
+moat init --json
+```
+
+`browser.mouriya.lan` is the same remote browser VM over Netbird. This is not a
+local fallback.
+
 ```text
-agent-browser open https://mattermost.237575.xyz
+moat open https://mattermost.237575.xyz
 → Mattermost login page; SSO entry is the "Keycloak" link below the local form
 → scroll into view, click "Keycloak"
 → redirected to https://keycloak.237575.xyz/realms/moat/protocol/openid-connect/auth?...
@@ -45,7 +57,12 @@ ssh root@vctcn-app1.mouriya.lan \
 
 ## Failure-mode triage
 
-- **`moat init` fails (controller down)** → file blocker against `Mouriya-Emma/fulcrum#221`, stop.
+- **`moat init` fails against `browser.hb.lan`** → retry once with
+  `MOAT_CONTROLLER=ws://browser.mouriya.lan:3000`. If the Netbird controller
+  succeeds, continue the audit and record the LAN-path failure as non-blocking
+  evidence.
+- **`moat init` fails against `browser.mouriya.lan` too** → file blocker against
+  `Mouriya-Emma/fulcrum#221`, stop.
 - **Keycloak rejects credential** → sops password drifted from Keycloak. Rotate via Keycloak admin API + re-encrypt this file with `sops --in-place .claude/secrets/e2e-mattermost.enc.yml`.
 - **Login lands at `/select_team`** → Mattermost team membership lost. Re-add via mmctl (above).
 
