@@ -15,13 +15,37 @@ import (
 // 0.0% reading. cpu_percent and memory_percent are non-nullable in the CLI
 // schema today but kept as pointers as well so a future schema relaxation
 // surfaces as `partial` rather than silently rendering 0%.
+//
+// `MonitorStatus` / `LastSampleAt` / `Since` were added by
+// fulcrum#234 / fulcrum PR #235 (merge sha 1093580b) so the plugin can branch
+// on the host's reporting state instead of inferring it from byte-identical
+// envelopes. They are pointers so an older CLI envelope without the
+// discriminator (legacy build still in flight) round-trips to the legacy
+// reporting render path rather than crashing or false-classifying.
 type monitorPayload struct {
-	HostID        string   `json:"host_id"`
-	Window        string   `json:"window"`
-	CPUPercent    *float64 `json:"cpu_percent"`
-	MemoryPercent *float64 `json:"memory_percent"`
-	DiskPercent   *float64 `json:"disk_percent"`
+	HostID        string         `json:"host_id"`
+	Window        string         `json:"window"`
+	MonitorStatus *monitorStatus `json:"monitor_status"`
+	LastSampleAt  *string        `json:"last_sample_at"`
+	Since         string         `json:"since"`
+	CPUPercent    *float64       `json:"cpu_percent"`
+	MemoryPercent *float64       `json:"memory_percent"`
+	DiskPercent   *float64       `json:"disk_percent"`
 }
+
+// monitorStatus is the host-level reporting state discriminator carried in the
+// CLI envelope's top-level `monitor_status` field. Three states are exhaustive
+// (server side derives them in metrics-collector.ts.getMonitorStatus per
+// fulcrum PR #235): the host was never seen (`unconfigured`), the host has
+// historical samples but none inside the current window (`no_data_in_window`),
+// or there is at least one fresh sample (`reporting`).
+type monitorStatus string
+
+const (
+	monitorStatusReporting      monitorStatus = "reporting"
+	monitorStatusNoDataInWindow monitorStatus = "no_data_in_window"
+	monitorStatusUnconfigured   monitorStatus = "unconfigured"
+)
 
 // monitorHighThreshold is the §B.10.3 threshold above which a single metric
 // promotes the card to colorPriorityHigh and surfaces the high-utilization
@@ -32,10 +56,13 @@ const monitorHighThreshold = 90.0
 // promotes the card to colorPriorityMedium (still below the high cutoff).
 const monitorMediumThreshold = 70.0
 
-// monitorBranch is the §B.10 four-way card classification: complete (all three
-// metrics present) with three utilization sub-bands (ok / medium / high), and
-// partial (disk_percent=null). The error envelope is routed via
-// renderMonitorBusinessError before this renderer is reached.
+// monitorBranch is the §B.10 four-way card classification of a *reporting*
+// host: complete (all three metrics present) with three utilization sub-bands
+// (ok / medium / high), and partial (disk_percent=null on a reporting host
+// where the agent skipped a disk reading). The error envelope is routed via
+// renderMonitorBusinessError before this renderer is reached, and the
+// unconfigured / no-data-in-window top-level branches are handled in
+// renderMonitor before monitorBranchFor is consulted.
 type monitorBranch int
 
 const (
@@ -45,17 +72,48 @@ const (
 	monitorBranchPartial
 )
 
-// renderMonitor produces the monitor-snapshot SlackAttachment per spike §B.10.
-// The three rendered branches (ok / medium / high) all use the same Title /
-// Pretext / Fields / Footer shape and differ only on Color + the high-
-// utilization warning text + the conditional View jobs / View apps buttons;
-// the partial branch overrides Color to colorWarn so a missing reading is
-// itself a soft alert regardless of cpu / mem values.
+// renderMonitor produces the monitor-snapshot SlackAttachment per spike §B.10
+// extended for issue #40's three-state discriminator. Top-level dispatch:
+// `unconfigured` and `no_data_in_window` get their own explanatory cards
+// (issue #40 acceptance: the operator must be able to tell at a glance which
+// of the three "I can't see numbers" root causes they're looking at);
+// `reporting` (and legacy envelopes that omit the discriminator entirely) fall
+// through to the existing four-branch utility-based render.
 func renderMonitor(raw json.RawMessage) (*model.SlackAttachment, error) {
 	var p monitorPayload
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return nil, fmt.Errorf("monitor payload: %w", err)
 	}
+	switch monitorEffectiveStatus(p) {
+	case monitorStatusUnconfigured:
+		return renderMonitorUnconfigured(p), nil
+	case monitorStatusNoDataInWindow:
+		return renderMonitorNoDataInWindow(p), nil
+	default:
+		return renderMonitorReporting(p), nil
+	}
+}
+
+// monitorEffectiveStatus returns the envelope's monitor_status value or falls
+// back to `reporting` when the field is absent. The fallback path keeps a
+// newer plugin compatible with an older CLI build that doesn't yet emit the
+// discriminator — the legacy four-branch render still fires and produces the
+// same em-dash card #40 was filed against, which is strictly no worse than
+// today.
+func monitorEffectiveStatus(p monitorPayload) monitorStatus {
+	if p.MonitorStatus == nil {
+		return monitorStatusReporting
+	}
+	return *p.MonitorStatus
+}
+
+// renderMonitorReporting renders the §B.10 four-branch card for a host that
+// is actively reporting (or for a legacy envelope without a status
+// discriminator, which the plugin treats as reporting per the back-compat
+// fallback above). This is the body of the pre-#40 renderMonitor; the
+// extraction keeps the §B.10 logic untouched so the existing seven test cases
+// continue to lock its behavior verbatim.
+func renderMonitorReporting(p monitorPayload) *model.SlackAttachment {
 	branch := monitorBranchFor(p)
 	att := &model.SlackAttachment{
 		Color:   monitorColor(branch),
@@ -68,15 +126,78 @@ func renderMonitor(raw json.RawMessage) (*model.SlackAttachment, error) {
 	if text := monitorWarningText(p); text != "" {
 		att.Text = text
 	}
-	return att, nil
+	return att
 }
 
-// monitorBranchFor classifies an envelope into one of the four §B.10 branches.
-// `partial` takes precedence over the max-based utilization classification
-// because a missing reading already signals an incomplete picture — surfacing
-// it as the more attention-grabbing high band would imply confidence the
-// renderer doesn't have. View jobs still appears on partial via the button
-// guard so the operator can pivot to the job queue when monitor data is thin.
+// renderMonitorUnconfigured renders the issue #40 unconfigured card: the host
+// has never reported a sample, so the four metric slots are intentionally
+// omitted (rendering em-dashes here would re-introduce the exact ambiguity
+// #40 was filed to fix). Color is colorWarn so the card visually reads as
+// "needs attention" without escalating to the red of colorPriorityHigh —
+// reporting an outage is the supervisor's job, not the renderer's.
+func renderMonitorUnconfigured(p monitorPayload) *model.SlackAttachment {
+	return &model.SlackAttachment{
+		Color:   colorWarn,
+		Title:   fmt.Sprintf("Monitor · %s — unconfigured", p.HostID),
+		Pretext: fmt.Sprintf("Monitor backend not installed on host `%s`.", p.HostID),
+		Text:    "Run `fulcrum monitor install` on this host (or onboard it via the supervisor) to start the collector. Until a sample lands no CPU / memory / disk readings are available.",
+		Footer:  fmt.Sprintf("fulcrum/monitor · host=%s · status=unconfigured", p.HostID),
+		Actions: []*model.PostAction{
+			makeAction("monitor_refresh", "Refresh", postActionStyleDefault, []string{"monitor"}),
+		},
+	}
+}
+
+// renderMonitorNoDataInWindow renders the issue #40 no-data-in-window card:
+// the host has reported samples in the past but none inside the requested
+// window. Surfacing the window lower bound (`since`) and the last sample
+// timestamp lets the operator decide between "wait longer", "widen the
+// window", and "the agent has stopped" without leaving the card.
+func renderMonitorNoDataInWindow(p monitorPayload) *model.SlackAttachment {
+	last := monitorLastSampleText(p.LastSampleAt)
+	since := monitorIsoOrDash(p.Since)
+	return &model.SlackAttachment{
+		Color:   colorWarn,
+		Title:   fmt.Sprintf("Monitor · %s — no data in window", p.HostID),
+		Pretext: fmt.Sprintf("No samples for host `%s` in the last %s.", p.HostID, monitorWindowValue(p.Window)),
+		Text:    fmt.Sprintf("Window since: `%s`\nLast sample: %s", since, last),
+		Footer:  fmt.Sprintf("fulcrum/monitor · host=%s · status=no_data_in_window", p.HostID),
+		Actions: []*model.PostAction{
+			makeAction("monitor_refresh", "Refresh", postActionStyleDefault, []string{"monitor"}),
+		},
+	}
+}
+
+// monitorLastSampleText renders the last_sample_at ISO timestamp wrapped in a
+// code span, with a `never` fallback when the field is null (which the CLI
+// emits for the unconfigured state — defensive here for completeness, since
+// the unconfigured branch doesn't reach this helper today).
+func monitorLastSampleText(ts *string) string {
+	if ts == nil || *ts == "" {
+		return "never"
+	}
+	return fmt.Sprintf("`%s`", *ts)
+}
+
+// monitorIsoOrDash renders an ISO timestamp as a code span or em-dash when
+// the field is empty. Kept separate from monitorLastSampleText so the
+// `since` field (always populated by the new CLI envelope) can stay
+// unconditionally wrapped without inheriting the "never" fallback that
+// makes sense only for `last_sample_at`.
+func monitorIsoOrDash(ts string) string {
+	if ts == "" {
+		return "—"
+	}
+	return ts
+}
+
+// monitorBranchFor classifies a reporting envelope into one of the four §B.10
+// branches. `partial` takes precedence over the max-based utilization
+// classification because a missing reading already signals an incomplete
+// picture — surfacing it as the more attention-grabbing high band would imply
+// confidence the renderer doesn't have. View jobs still appears on partial
+// via the button guard so the operator can pivot to the job queue when
+// monitor data is thin.
 func monitorBranchFor(p monitorPayload) monitorBranch {
 	if p.DiskPercent == nil {
 		return monitorBranchPartial
