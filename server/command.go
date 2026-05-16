@@ -187,6 +187,15 @@ func (p *Plugin) ExecuteCommand(_ *plugin.Context, args *model.CommandArgs) (*mo
 		return ephemeral(searchBusinessErrorMessage(errCode, errMsg)), nil
 	}
 
+	// jobs surfaces unknown_scope ephemerally per spike §B.11.5: a malformed
+	// --scope is a slash-input error the channel can't act on, so the
+	// colorError bot card is reserved for systemd_unavailable (and any
+	// future non-ephemeral code) which renderJobsBusinessError handles via
+	// fall-through to the renderer.
+	if verb, errCode, errMsg, parseErr := parseEnvelopeOutcome(res.Stdout); parseErr == nil && verb == "jobs" && jobsEphemeralCodes[errCode] {
+		return ephemeral(jobsBusinessErrorMessage(errCode, errMsg)), nil
+	}
+
 	att, renderErr := renderEnvelopeAtForRequest(res.Stdout, time.Now(), args.UserId, argv)
 	if renderErr != nil {
 		return ephemeral(fmt.Sprintf("render error: %v (raw: %s)", renderErr, truncate(string(res.Stdout), 200))), nil
