@@ -30,6 +30,7 @@ type Plugin struct {
 	rexec     *rexec.Client
 	rexecAddr string
 	botUserID string
+	config    configuration
 }
 
 // OnActivate wires the plugin into the host server: it constructs the
@@ -78,11 +79,36 @@ func (p *Plugin) OnActivate() error {
 	p.botUserID = botID
 	p.mu.Unlock()
 
+	if err := p.OnConfigurationChange(); err != nil {
+		return fmt.Errorf("load configuration: %w", err)
+	}
+
 	client.Log.Info("fulcrum plugin activated",
 		"bot_user_id", botID,
 		"rexecd_addr", addr,
 	)
 	return nil
+}
+
+// OnConfigurationChange is invoked by Mattermost when the plugin activates
+// and whenever an admin saves the System Console settings page. It refreshes
+// the in-memory configuration snapshot used by ExecuteCommand to inject the
+// default host id into `tasks create` argv.
+func (p *Plugin) OnConfigurationChange() error {
+	cfg, err := p.loadPluginConfiguration()
+	if err != nil {
+		return err
+	}
+	p.mu.Lock()
+	p.config = cfg
+	p.mu.Unlock()
+	return nil
+}
+
+func (p *Plugin) getConfiguration() configuration {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.config
 }
 
 // OnDeactivate releases the rexec gRPC connection. The Mattermost host

@@ -23,3 +23,23 @@ func TestResolveRexecdAddr_Blank(t *testing.T) {
 		}
 	}
 }
+
+func TestConfiguration_TrimmedDefaultHostID(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"", ""},
+		{"vctcn-app1", "vctcn-app1"},
+		{"  vctcn-app1  ", "vctcn-app1"},
+		{"\tvctcn-app1\n", "vctcn-app1"},
+		{"   ", ""},
+	}
+	for _, tc := range cases {
+		cfg := configuration{DefaultHostID: tc.in}
+		got := cfg.trimmedDefaultHostID()
+		if got != tc.want {
+			t.Errorf("trimmedDefaultHostID(%q) = %q want %q", tc.in, got, tc.want)
+		}
+	}
+}
