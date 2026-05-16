@@ -15,5 +15,18 @@
             "darwin-arm64": "server/dist/plugin-darwin-arm64",
             "windows-amd64": "server/dist/plugin-windows-amd64.exe"
         }
+    },
+    "settings_schema": {
+        "header": "Fulcrum slash + interactive cards. Network coordinates (rexecd address) are set via the REXECD_ADDR environment variable on the Mattermost server process; only admin-tunable business knobs appear here.",
+        "footer": "See https://github.com/Mouriya-Emma/mattermost-plugin-fulcrum for setup details.",
+        "settings": [
+            {
+                "key": "DefaultHostID",
+                "display_name": "Default host id for /f tasks create",
+                "type": "text",
+                "help_text": "Optional. When set, /f tasks create injects --host <DefaultHostID> if the slashing user does not pass --host explicitly. fulcrum CLI requires hostId in remote-only deployments (otherwise the server returns CREATE_FAILED — remote-only mode requires hostId). Leave blank to require every user to pass --host themselves.",
+                "default": ""
+            }
+        ]
     }
 }
