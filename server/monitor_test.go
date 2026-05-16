@@ -57,6 +57,12 @@ func monitorErrRaw(t *testing.T, code, message string) []byte {
 
 func pct(v float64) *float64 { return &v }
 
+// statusPtr is the *monitorStatus helper used by the issue #40 three-state
+// testcases. Kept tiny so each test reads as `MonitorStatus: statusPtr("...")`
+// rather than dragging a named local around.
+func statusPtr(s monitorStatus) *monitorStatus { return &s }
+
+
 func fieldValue(t *testing.T, fields []*model.SlackAttachmentField, title string) string {
 	t.Helper()
 	for _, f := range fields {
@@ -364,6 +370,193 @@ func TestMonitor_FormatPercentTrimsTrailingZero(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("monitorFormatPercent(%v) = %q want %q", tc.in, got, tc.want)
 		}
+	}
+}
+
+// TestMonitor_Unconfigured locks the issue #40 unconfigured branch: the
+// envelope tells us the host has never reported, so the renderer must drop
+// the four-slot metric field block entirely (em-dash slots would re-introduce
+// the exact ambiguity #40 was filed to fix), surface a human-readable
+// "backend not installed" pretext, and keep Refresh as the only action — the
+// jobs / apps triage pivots make no sense on a host that has no collector.
+func TestMonitor_Unconfigured(t *testing.T) {
+	att, err := renderEnvelope(monitorRaw(t, monitorPayload{
+		HostID:        "ghost-host",
+		Window:        "1h",
+		MonitorStatus: statusPtr(monitorStatusUnconfigured),
+		LastSampleAt:  nil,
+		Since:         "2026-05-16T09:30:00Z",
+	}))
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if att.Color != colorWarn {
+		t.Errorf("color: got %q want %q (unconfigured ⇒ colorWarn)", att.Color, colorWarn)
+	}
+	if att.Title != "Monitor · ghost-host — unconfigured" {
+		t.Errorf("title: %q", att.Title)
+	}
+	if !strings.Contains(att.Pretext, "Monitor backend not installed on host `ghost-host`.") {
+		t.Errorf("pretext should name the host + 'not installed', got %q", att.Pretext)
+	}
+	if !strings.Contains(att.Text, "fulcrum monitor install") {
+		t.Errorf("text should reference the install command, got %q", att.Text)
+	}
+	if len(att.Fields) != 0 {
+		t.Errorf("unconfigured card must not render the CPU/Memory/Disk/Window field block (would re-introduce ambiguous em-dashes), got %d fields", len(att.Fields))
+	}
+	if att.Footer != "fulcrum/monitor · host=ghost-host · status=unconfigured" {
+		t.Errorf("footer: %q", att.Footer)
+	}
+	if names := actionNames(att.Actions); !equalStringSlice(names, []string{"Refresh"}) {
+		t.Errorf("unconfigured card must show only Refresh (no jobs/apps pivot — there is no collector), got %v", names)
+	}
+	argv := actionArgvList(t, att.Actions[0])
+	if !equalStringSlice(argv, []string{"monitor"}) {
+		t.Errorf("Refresh argv on unconfigured card: %v want [monitor]", argv)
+	}
+}
+
+// TestMonitor_NoDataInWindow locks the issue #40 no-data-in-window branch:
+// the host has historical samples but none in the current window, so the
+// renderer surfaces the window lower bound and the last sample timestamp so
+// the operator can decide between "wait longer" / "widen window" / "the
+// agent stopped" without leaving the card.
+func TestMonitor_NoDataInWindow(t *testing.T) {
+	att, err := renderEnvelope(monitorRaw(t, monitorPayload{
+		HostID:        "stale-host",
+		Window:        "1h",
+		MonitorStatus: statusPtr(monitorStatusNoDataInWindow),
+		LastSampleAt:  strPtr("2026-05-15T09:32:51Z"),
+		Since:         "2026-05-16T08:32:51Z",
+	}))
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if att.Color != colorWarn {
+		t.Errorf("color: got %q want %q (no_data_in_window ⇒ colorWarn)", att.Color, colorWarn)
+	}
+	if att.Title != "Monitor · stale-host — no data in window" {
+		t.Errorf("title: %q", att.Title)
+	}
+	if !strings.Contains(att.Pretext, "No samples for host `stale-host` in the last 1h.") {
+		t.Errorf("pretext should name the host + window, got %q", att.Pretext)
+	}
+	if !strings.Contains(att.Text, "2026-05-16T08:32:51Z") {
+		t.Errorf("text must surface the `since` timestamp, got %q", att.Text)
+	}
+	if !strings.Contains(att.Text, "2026-05-15T09:32:51Z") {
+		t.Errorf("text must surface the last_sample_at timestamp, got %q", att.Text)
+	}
+	if len(att.Fields) != 0 {
+		t.Errorf("no-data-in-window card must not render the metric field block (would re-introduce ambiguous em-dashes), got %d fields", len(att.Fields))
+	}
+	if att.Footer != "fulcrum/monitor · host=stale-host · status=no_data_in_window" {
+		t.Errorf("footer: %q", att.Footer)
+	}
+	if names := actionNames(att.Actions); !equalStringSlice(names, []string{"Refresh"}) {
+		t.Errorf("no-data-in-window card must show only Refresh, got %v", names)
+	}
+}
+
+// TestMonitor_NoDataInWindow_LastSampleNever covers the defensive `never`
+// fallback: the upstream contract emits last_sample_at as a non-null ISO
+// string for no_data_in_window today, but the field is typed as nullable, so
+// a stricter older server that emits null should not crash the renderer.
+func TestMonitor_NoDataInWindow_LastSampleNever(t *testing.T) {
+	att, err := renderEnvelope(monitorRaw(t, monitorPayload{
+		HostID:        "edge-case-host",
+		Window:        "30m",
+		MonitorStatus: statusPtr(monitorStatusNoDataInWindow),
+		LastSampleAt:  nil,
+		Since:         "2026-05-16T09:00:00Z",
+	}))
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if !strings.Contains(att.Text, "Last sample: never") {
+		t.Errorf("text should fall back to `never` for null last_sample_at, got %q", att.Text)
+	}
+}
+
+// TestMonitor_Reporting_WithStatus pins that an explicit `reporting` status
+// envelope still routes through the §B.10 four-branch render — the new
+// discriminator opts in to the branch dispatch but does not replace the
+// utilization-based render for the reporting case (issue #40 AC #4: do not
+// regress the reporting golden).
+func TestMonitor_Reporting_WithStatus(t *testing.T) {
+	att, err := renderEnvelope(monitorRaw(t, monitorPayload{
+		HostID:        "vctcn-app1",
+		Window:        "1h",
+		MonitorStatus: statusPtr(monitorStatusReporting),
+		LastSampleAt:  strPtr("2026-05-16T10:00:00Z"),
+		Since:         "2026-05-16T09:00:00Z",
+		CPUPercent:    pct(22.76),
+		MemoryPercent: pct(76.98),
+		DiskPercent:   pct(93.46),
+	}))
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if att.Color != colorPriorityHigh {
+		t.Errorf("color: got %q want %q (disk 93.46 crosses high)", att.Color, colorPriorityHigh)
+	}
+	if att.Title != "Monitor · vctcn-app1 (window=1h)" {
+		t.Errorf("title: %q", att.Title)
+	}
+	if !strings.Contains(att.Pretext, "cpu 22.8% · mem 77% · disk 93.5%") {
+		t.Errorf("pretext should preserve the §B.10 metric summary, got %q", att.Pretext)
+	}
+	if len(att.Fields) != 4 {
+		t.Fatalf("reporting card must keep the four-field block, got %d", len(att.Fields))
+	}
+	if got := fieldValue(t, att.Fields, "Disk"); got != "93.5%" {
+		t.Errorf("Disk field on explicit-reporting card: %q", got)
+	}
+	if !strings.Contains(att.Text, "Disk usage is high (93.5%)") {
+		t.Errorf("warning text on explicit-reporting card: %q", att.Text)
+	}
+	if att.Footer != "fulcrum/monitor · host=vctcn-app1" {
+		t.Errorf("footer must remain the §B.10 form (status is not appended on the reporting card): %q", att.Footer)
+	}
+	if names := actionNames(att.Actions); !equalStringSlice(names, []string{"Refresh", "View jobs"}) {
+		t.Errorf("disk-only high actions: %v", names)
+	}
+}
+
+// TestMonitor_LegacyEnvelopeFallback locks the issue #40 back-compat
+// requirement: a pre-fulcrum#234 CLI envelope (no monitor_status field) must
+// still render via the §B.10 four-branch path — the new plugin must not
+// crash, must not classify it as unconfigured, and must produce the same
+// em-dash-shaped card today's deployed plugin does. The existing §B.10
+// testcases above are an implicit cover for this path (they all omit
+// MonitorStatus), but this test is the explicit lock so the back-compat
+// invariant is named in the test file.
+func TestMonitor_LegacyEnvelopeFallback(t *testing.T) {
+	att, err := renderEnvelope(monitorRaw(t, monitorPayload{
+		HostID:        "legacy-cli-host",
+		Window:        "1h",
+		MonitorStatus: nil, // pre-#234 envelope omits the discriminator
+		LastSampleAt:  nil,
+		Since:         "",
+		CPUPercent:    nil,
+		MemoryPercent: nil,
+		DiskPercent:   nil, // legacy all-null envelope ⇒ §B.10 partial branch
+	}))
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if att.Color != colorWarn {
+		t.Errorf("legacy all-null envelope must land on §B.10 partial (colorWarn), got %q", att.Color)
+	}
+	if att.Title != "Monitor · legacy-cli-host (window=1h)" {
+		t.Errorf("legacy envelope must keep the §B.10 title form (no `— unconfigured` suffix): %q", att.Title)
+	}
+	if att.Pretext != "cpu — · mem — · disk —" {
+		t.Errorf("legacy envelope must keep the §B.10 em-dash pretext for back-compat: %q", att.Pretext)
+	}
+	if len(att.Fields) != 4 {
+		t.Errorf("legacy envelope must keep the four-field block (back-compat with today's prod card): got %d", len(att.Fields))
 	}
 }
 
