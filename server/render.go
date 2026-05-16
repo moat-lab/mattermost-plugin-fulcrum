@@ -87,6 +87,9 @@ func renderEnvelopeAtForRequest(stdout []byte, now time.Time, actorUserID string
 		if data.Verb == "tasks.diff" && !taskDiffEphemeralCodes[code] {
 			return renderTaskDiffBusinessError(taskIDForDiffError(env.Data, taskDiffIDFromArgv(requestArgv)), code, msg), nil
 		}
+		if data.Verb == "monitor" {
+			return renderMonitorBusinessError(code, msg), nil
+		}
 		return renderBusinessError(data.Verb, code, msg), nil
 	}
 
@@ -112,6 +115,8 @@ func renderEnvelopeAtForRequest(stdout []byte, now time.Time, actorUserID string
 		return renderAppLogs(env.Data, hints)
 	case "search":
 		return renderSearch(env.Data, requestArgv)
+	case "monitor":
+		return renderMonitor(env.Data)
 	default:
 		return renderGenericVerb(data.Verb, env.Data)
 	}
