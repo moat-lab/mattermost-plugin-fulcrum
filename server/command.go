@@ -179,6 +179,14 @@ func (p *Plugin) ExecuteCommand(_ *plugin.Context, args *model.CommandArgs) (*mo
 		return ephemeral(taskDiffBusinessErrorMessage(errCode, errMsg)), nil
 	}
 
+	// search surfaces query_too_short / invalid_limit ephemerally per spike
+	// §B.9.5: the channel can't act on a malformed query, so the colorError
+	// bot card is reserved for envelope-level / unknown codes (FETCH_FAILED
+	// etc.) that fall through to renderBusinessError.
+	if verb, errCode, errMsg, parseErr := parseEnvelopeOutcome(res.Stdout); parseErr == nil && verb == "search" && searchEphemeralCodes[errCode] {
+		return ephemeral(searchBusinessErrorMessage(errCode, errMsg)), nil
+	}
+
 	att, renderErr := renderEnvelopeAtForRequest(res.Stdout, time.Now(), args.UserId, argv)
 	if renderErr != nil {
 		return ephemeral(fmt.Sprintf("render error: %v (raw: %s)", renderErr, truncate(string(res.Stdout), 200))), nil
