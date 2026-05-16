@@ -90,6 +90,9 @@ func renderEnvelopeAtForRequest(stdout []byte, now time.Time, actorUserID string
 		if data.Verb == "monitor" {
 			return renderMonitorBusinessError(code, msg), nil
 		}
+		if data.Verb == "jobs" && !jobsEphemeralCodes[code] {
+			return renderJobsBusinessError(jobsEffectiveScope(env.Data, requestArgv), code, msg), nil
+		}
 		return renderBusinessError(data.Verb, code, msg), nil
 	}
 
@@ -117,6 +120,8 @@ func renderEnvelopeAtForRequest(stdout []byte, now time.Time, actorUserID string
 		return renderSearch(env.Data, requestArgv)
 	case "monitor":
 		return renderMonitor(env.Data)
+	case "jobs":
+		return renderJobs(env.Data)
 	default:
 		return renderGenericVerb(data.Verb, env.Data)
 	}

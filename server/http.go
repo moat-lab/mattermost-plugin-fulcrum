@@ -172,6 +172,22 @@ func (p *Plugin) handleAction(w http.ResponseWriter, r *http.Request) {
 			writeActionError(w, searchBusinessErrorMessage(errCode, errMsg))
 			return
 		}
+		// jobs routes unknown_scope ephemerally per spike §B.11.5; other
+		// codes (notably systemd_unavailable) fall through to the renderer
+		// so the user keeps the Refresh button in view on the existing
+		// card.
+		if verb == "jobs" && !jobsEphemeralCodes[errCode] {
+			if err := applyEnvelopeToPostWithRequest(client, botID, req.PostID, res.Stdout, req.UserID, argvFromContext(req.Context)); err != nil {
+				writeActionError(w, err.Error())
+				return
+			}
+			writeActionOK(w)
+			return
+		}
+		if verb == "jobs" {
+			writeActionError(w, jobsBusinessErrorMessage(errCode, errMsg))
+			return
+		}
 		writeActionError(w, verbBusinessErrorMessage(verb, errCode, errMsg))
 		return
 	}
