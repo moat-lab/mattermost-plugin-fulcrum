@@ -122,6 +122,8 @@ func renderEnvelopeAtForRequest(stdout []byte, now time.Time, actorUserID string
 		return renderMonitor(env.Data)
 	case "jobs":
 		return renderJobs(env.Data)
+	case "projects":
+		return renderProjects(env.Data)
 	default:
 		return renderGenericVerb(data.Verb, env.Data)
 	}
@@ -235,6 +237,15 @@ func renderBusinessError(verb, code, message string) *model.SlackAttachment {
 			makeAction("apps_overview_refresh", "Refresh", postActionStyleDefault, []string{"apps", "list"}),
 		}
 		att.Footer = "fulcrum/apps.list · schema_version=1"
+	case "projects":
+		// Per spike §B.12.5, business errors on projects (notably
+		// `backend_unavailable`) keep the Refresh button so the user can
+		// retry from the same card once the backend recovers. projects has
+		// no ephemeral business codes, so every code lands here.
+		att.Actions = []*model.PostAction{
+			makeAction("projects_refresh", "Refresh", postActionStyleDefault, projectsRefreshArgv()),
+		}
+		att.Footer = "fulcrum/projects · schema_version=1"
 	}
 	return att
 }
