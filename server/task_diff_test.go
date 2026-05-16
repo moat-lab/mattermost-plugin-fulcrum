@@ -402,6 +402,29 @@ func TestRenderTaskDiff_GitUnavailable_RoutesToColorErrorCard(t *testing.T) {
 	assertActionArgv(t, att.Actions[1], "task_diff_back", postActionStyleDefault, []string{"tasks", "get", "t_42"}, false)
 }
 
+// TestRenderTaskDiffBusinessErrorEmptyID guards the issue #39 fallback:
+// when both the envelope and the argv yield an empty task id, the §B.5.5
+// colorError card must drop the `Diff · task `<id>`` cell entirely instead
+// of formatting an empty id into the template — Mattermost's Markdown
+// renderer would otherwise collapse the two adjacent backticks into an
+// orphan-backtick artifact (` Diff · task ` ` — error`) and visibly break
+// the title.
+func TestRenderTaskDiffBusinessErrorEmptyID(t *testing.T) {
+	att := renderTaskDiffBusinessError("", "git_unavailable", "git binary not on PATH")
+	if att.Color != colorError {
+		t.Errorf("color: got %q want %q", att.Color, colorError)
+	}
+	if att.Title != "Diff — error" {
+		t.Errorf("title: got %q want %q", att.Title, "Diff — error")
+	}
+	if strings.Contains(att.Title, "`") {
+		t.Errorf("title must not contain a backtick when task id is empty: %q", att.Title)
+	}
+	if !strings.Contains(att.Text, "git_unavailable") || !strings.Contains(att.Text, "git binary not on PATH") {
+		t.Errorf("text missing code/message: %q", att.Text)
+	}
+}
+
 // TestRenderTaskDiff_TaskNotFound_FallsThroughToGenericCard documents the
 // defensive path: command.go ephemerals tasks.diff `task_not_found` before
 // it reaches renderEnvelopeAtForRequest, so this branch only fires if a

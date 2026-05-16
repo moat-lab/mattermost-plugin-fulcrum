@@ -284,11 +284,18 @@ func taskDiffActions(taskID string) []*model.PostAction {
 // `git_unavailable` code (and any future tasks.diff business error that
 // should surface as a non-ephemeral bot post). The Refresh + Back to task
 // buttons mirror the success-card row so the user can retry from the same
-// post once the backend recovers.
+// post once the backend recovers. When taskID is empty (envelope omitted
+// task_id and argv fallback also yielded ""), the title drops the
+// `Diff · task `<id>`` cell entirely to avoid an orphan-backtick artifact
+// in the Mattermost-rendered Markdown (issue #39).
 func renderTaskDiffBusinessError(taskID, code, message string) *model.SlackAttachment {
+	title := "Diff — error"
+	if taskID != "" {
+		title = fmt.Sprintf("Diff · task `%s` — error", taskID)
+	}
 	return &model.SlackAttachment{
 		Color:   colorError,
-		Title:   fmt.Sprintf("Diff · task `%s` — error", taskID),
+		Title:   title,
 		Text:    fmt.Sprintf("`%s` %s", code, message),
 		Footer:  "fulcrum/tasks.diff · schema_version=1",
 		Actions: taskDiffActions(taskID),
