@@ -54,6 +54,12 @@ func buildAutocompleteTree() *model.AutocompleteData {
 	tasksCreate.AddNamedStaticListArgument("priority", "Priority", false, []model.AutocompleteListItem{
 		{Item: "high"}, {Item: "medium"}, {Item: "low"},
 	})
+	// host is required by fulcrum CLI in remote-only deployments
+	// (fulcrum/server/routes/tasks.ts rejects body without hostId). Marked
+	// optional in autocomplete because System Console may set DefaultHostID
+	// to cover the common case; the plugin injects --host <DefaultHostID>
+	// when the user omits this arg (see injectDefaultHostIfNeeded).
+	tasksCreate.AddNamedTextArgument("host", "Host id (required in remote-only; defaults to System Console DefaultHostID if set)", "<host-id>", "", false)
 	tasks.AddCommand(tasksCreate)
 
 	tasksSetStatus := model.NewAutocompleteData("set-status", "<id> <status>", "Set task status.")
@@ -131,6 +137,7 @@ func (p *Plugin) ExecuteCommand(_ *plugin.Context, args *model.CommandArgs) (*mo
 	if err != nil {
 		return ephemeral(err.Error()), nil
 	}
+	argv = injectDefaultHostIfNeeded(argv, p.getConfiguration().trimmedDefaultHostID())
 
 	ctx, cancel := context.WithTimeout(context.Background(), rexecRunTimeout)
 	defer cancel()
@@ -230,6 +237,61 @@ func buildCLIArgv(raw string) ([]string, error) {
 	argv := append([]string{"fulcrum"}, verbArgs...)
 	argv = append(argv, "--json")
 	return argv, nil
+}
+
+// injectDefaultHostIfNeeded inserts `--host <defaultHostID>` into a
+// `tasks create` argv when the user did not pass `--host` themselves. fulcrum
+// CLI rejects the underlying POST when remote-only mode + missing hostId
+// (fulcrum/server/routes/tasks.ts), so without this injection an admin-set
+// DefaultHostID would still result in a CREATE_FAILED ephemeral.
+//
+// The function is a no-op when:
+//   - defaultHostID is empty (admin hasn't configured a default)
+//   - argv does not target the `tasks create` verb
+//   - argv already carries an explicit `--host` token (per-call override)
+//
+// The injection is placed before the trailing `--json` flag to keep the
+// argv shape predictable for parseEnvelopeOutcome / renderer dispatchers.
+func injectDefaultHostIfNeeded(argv []string, defaultHostID string) []string {
+	if defaultHostID == "" {
+		return argv
+	}
+	if !isTasksCreateArgv(argv) {
+		return argv
+	}
+	if hasHostArg(argv) {
+		return argv
+	}
+	n := len(argv)
+	if n > 0 && argv[n-1] == "--json" {
+		out := make([]string, 0, n+2)
+		out = append(out, argv[:n-1]...)
+		out = append(out, "--host", defaultHostID, "--json")
+		return out
+	}
+	out := make([]string, 0, n+2)
+	out = append(out, argv...)
+	out = append(out, "--host", defaultHostID)
+	return out
+}
+
+// isTasksCreateArgv returns true when argv targets the `tasks create` verb.
+// The plugin always prepends "fulcrum" before forwarding to rexecd, so the
+// positional shape is fixed.
+func isTasksCreateArgv(argv []string) bool {
+	return len(argv) >= 3 && argv[0] == "fulcrum" && argv[1] == "tasks" && argv[2] == "create"
+}
+
+// hasHostArg returns true when argv contains an explicit `--host` token in
+// either space-separated form (`--host vctcn-app1`) or equals-bound form
+// (`--host=vctcn-app1`). Both are valid fulcrum CLI input shapes.
+func hasHostArg(argv []string) bool {
+	for _, tok := range argv {
+		if tok == "--host" || strings.HasPrefix(tok, "--host=") {
+			return true
+		}
+	}
+	return false
 }
 
 func ephemeral(text string) *model.CommandResponse {
