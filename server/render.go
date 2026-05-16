@@ -124,6 +124,8 @@ func renderEnvelopeAtForRequest(stdout []byte, now time.Time, actorUserID string
 		return renderJobs(env.Data)
 	case "projects":
 		return renderProjects(env.Data)
+	case "help":
+		return renderHelp(env.Data)
 	default:
 		return renderGenericVerb(data.Verb, env.Data)
 	}
@@ -246,6 +248,15 @@ func renderBusinessError(verb, code, message string) *model.SlackAttachment {
 			makeAction("projects_refresh", "Refresh", postActionStyleDefault, projectsRefreshArgv()),
 		}
 		att.Footer = "fulcrum/projects · schema_version=1"
+	case "help":
+		// Per spike §B.13.5 the CLI help verb does not emit business errors
+		// today (the verb is a static catalog), but the arm keeps Refresh
+		// reachable so a future schema addition (e.g. transport-derived
+		// `backend_unavailable`) surfaces consistently with the other verbs.
+		att.Actions = []*model.PostAction{
+			makeAction("help_refresh", "Refresh", postActionStyleDefault, helpRefreshArgv()),
+		}
+		att.Footer = "fulcrum/help · schema_version=1"
 	}
 	return att
 }
