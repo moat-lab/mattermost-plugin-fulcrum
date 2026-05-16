@@ -170,6 +170,15 @@ func (p *Plugin) ExecuteCommand(_ *plugin.Context, args *model.CommandArgs) (*mo
 		return ephemeral(appLogsBusinessErrorMessage(errCode, errMsg, argvAppID, hints.RequestedService)), nil
 	}
 
+	// tasks.diff surfaces task_not_found ephemerally per spike §B.5.5: the
+	// channel can't usefully act on a task that doesn't exist, so the
+	// colorError bot card is reserved for git_unavailable (and any future
+	// non-ephemeral diff code). The renderer fall-through handles
+	// git_unavailable by routing it to renderTaskDiffBusinessError.
+	if verb, errCode, errMsg, parseErr := parseEnvelopeOutcome(res.Stdout); parseErr == nil && verb == "tasks.diff" && taskDiffEphemeralCodes[errCode] {
+		return ephemeral(taskDiffBusinessErrorMessage(errCode, errMsg)), nil
+	}
+
 	att, renderErr := renderEnvelopeAtForRequest(res.Stdout, time.Now(), args.UserId, argv)
 	if renderErr != nil {
 		return ephemeral(fmt.Sprintf("render error: %v (raw: %s)", renderErr, truncate(string(res.Stdout), 200))), nil
