@@ -1,0 +1,3 @@
+creation_rules:
+  - path_regex: \.claude/secrets/.*\.enc\.yml$
+    age: age1r8z7kdmduws7kgc8erwkmh42xcsszf9mnnera6dqmgzc3d5txggqdj2ytt
