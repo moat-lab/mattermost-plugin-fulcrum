@@ -110,6 +110,8 @@ func renderEnvelopeAtForRequest(stdout []byte, now time.Time, actorUserID string
 	case "apps.logs":
 		hints, _ := extractAppLogsHints(requestArgv)
 		return renderAppLogs(env.Data, hints)
+	case "search":
+		return renderSearch(env.Data, requestArgv)
 	default:
 		return renderGenericVerb(data.Verb, env.Data)
 	}

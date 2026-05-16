@@ -156,6 +156,22 @@ func (p *Plugin) handleAction(w http.ResponseWriter, r *http.Request) {
 			writeActionError(w, taskDiffBusinessErrorMessage(errCode, errMsg))
 			return
 		}
+		// search routes query_too_short / invalid_limit ephemerally per spike
+		// §B.9.5; other codes fall through to renderBusinessError on the
+		// existing card so the user keeps the Refresh + Increase limit
+		// buttons in view.
+		if verb == "search" && !searchEphemeralCodes[errCode] {
+			if err := applyEnvelopeToPostWithRequest(client, botID, req.PostID, res.Stdout, req.UserID, argvFromContext(req.Context)); err != nil {
+				writeActionError(w, err.Error())
+				return
+			}
+			writeActionOK(w)
+			return
+		}
+		if verb == "search" {
+			writeActionError(w, searchBusinessErrorMessage(errCode, errMsg))
+			return
+		}
 		writeActionError(w, verbBusinessErrorMessage(verb, errCode, errMsg))
 		return
 	}
