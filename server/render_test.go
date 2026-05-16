@@ -5,17 +5,18 @@ import (
 	"testing"
 )
 
-// TestRenderEnvelope_GenericFallback covers verbs that don't yet have a
-// per-verb renderer (issue #19 — `help` — is the last one). Until that
-// lands, the plugin must fall back to a pretty-printed JSON dump so users
-// see CLI output rather than a render error. When `help` lands the
-// dispatcher's default arm and this test should both be retired.
+// TestRenderEnvelope_GenericFallback exercises the default arm of the verb
+// dispatcher. Every spike-enumerated verb (B.1–B.13) now has a per-verb
+// renderer, so the only way to land on the fallback is a synthetic verb the
+// CLI emits before a matching renderer ships — the fallback keeps users
+// seeing CLI output (pretty-printed) rather than a render error in that
+// transition window.
 func TestRenderEnvelope_GenericFallback(t *testing.T) {
 	in := []byte(`{
 		"success": true,
 		"data": {
 			"schema_version": 1,
-			"verb": "help",
+			"verb": "unknown_verb_for_test",
 			"total": 0
 		}
 	}`)
@@ -23,7 +24,7 @@ func TestRenderEnvelope_GenericFallback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if att.Title != "fulcrum help" {
+	if att.Title != "fulcrum unknown_verb_for_test" {
 		t.Fatalf("title: %q", att.Title)
 	}
 	if !strings.Contains(att.Text, "\"total\": 0") {
