@@ -237,11 +237,11 @@ func TestRenderTaskDetail_UnknownActionDropped(t *testing.T) {
 	if len(att.Actions) != 2 {
 		t.Fatalf("actions len: got %d want 2", len(att.Actions))
 	}
-	if att.Actions[0].Id != "set_status_in_progress" {
-		t.Errorf("first action id: %q", att.Actions[0].Id)
+	if got := att.Actions[0].Integration.Context[actionContextActionIDKey]; got != "set_status_in_progress" {
+		t.Errorf("first action context action_id: got %#v", got)
 	}
-	if att.Actions[1].Id != "task_refresh" {
-		t.Errorf("second action id: %q", att.Actions[1].Id)
+	if got := att.Actions[1].Integration.Context[actionContextActionIDKey]; got != "task_refresh" {
+		t.Errorf("second action context action_id: got %#v", got)
 	}
 }
 
@@ -324,8 +324,9 @@ func fieldStr(t *testing.T, f *model.SlackAttachmentField) string {
 
 func assertActionArgv(t *testing.T, act *model.PostAction, id, style string, wantArgv []string, wantDialog bool) {
 	t.Helper()
-	if act.Id != id {
-		t.Errorf("action id: got %q want %q", act.Id, id)
+	wantMattermostID := mattermostActionID(id)
+	if act.Id != wantMattermostID {
+		t.Errorf("action id: got %q want %q", act.Id, wantMattermostID)
 	}
 	if act.Style != style {
 		t.Errorf("action %s style: got %q want %q", id, act.Style, style)
@@ -338,6 +339,9 @@ func assertActionArgv(t *testing.T, act *model.PostAction, id, style string, wan
 	}
 	if act.Integration.URL != "/plugins/"+manifestID+"/action" {
 		t.Errorf("action %s url: %q", id, act.Integration.URL)
+	}
+	if got := act.Integration.Context[actionContextActionIDKey]; got != id {
+		t.Errorf("action %s context action_id: got %#v want %q", id, got, id)
 	}
 	raw, ok := act.Integration.Context[actionContextArgvKey].([]any)
 	if !ok {

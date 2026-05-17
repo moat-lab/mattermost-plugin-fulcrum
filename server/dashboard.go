@@ -193,22 +193,40 @@ func dashboardActions(d dashboardPayload) []*model.PostAction {
 // makeAction wires a fulcrum button into the existing /plugins/fulcrum/action
 // endpoint. argv is stuffed into Integration.Context[actionContextArgvKey]
 // per the contract in server/http.go (which prepends "fulcrum" and appends
-// "--json" before invoking rexec).
+// "--json" before invoking rexec). Mattermost routes action callbacks through
+// /api/v4/posts/{post_id}/actions/{action_id:[A-Za-z0-9]+}, so the public
+// PostAction.Id must be alphanumeric even though the plugin keeps its semantic
+// snake_case id in Integration.Context.
 func makeAction(id, label, style string, argv []string) *model.PostAction {
 	ctxArgv := make([]any, len(argv))
 	for i, v := range argv {
 		ctxArgv[i] = v
 	}
 	return &model.PostAction{
-		Id:    id,
+		Id:    mattermostActionID(id),
 		Name:  label,
 		Type:  model.PostActionTypeButton,
 		Style: style,
 		Integration: &model.PostActionIntegration{
 			URL: "/plugins/" + manifestID + "/action",
 			Context: map[string]any{
-				actionContextArgvKey: ctxArgv,
+				actionContextArgvKey:     ctxArgv,
+				actionContextActionIDKey: id,
 			},
 		},
 	}
+}
+
+func mattermostActionID(id string) string {
+	var b strings.Builder
+	b.Grow(len(id))
+	for _, r := range id {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		}
+	}
+	if b.Len() == 0 {
+		return "action"
+	}
+	return b.String()
 }

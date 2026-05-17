@@ -251,11 +251,11 @@ func (p *Plugin) handleDialog(w http.ResponseWriter, r *http.Request) {
 	//   per-verb result card directly with the actor mention.
 	switch {
 	case taskMutationVerbs[verb]:
-		if err := refreshTaskPost(ctx, p, client, rc, botID, st.PostID, taskIDFromArgv(st.Argv), res.Stdout); err != nil {
+		if _, err := refreshTaskPost(ctx, p, client, rc, botID, st.PostID, taskIDFromArgv(st.Argv), res.Stdout, ""); err != nil {
 			sendDialogEphemeral(client, botID, st.ChannelID, userID, err.Error())
 		}
 	case appRoundTripMutationVerbs[verb]:
-		if err := refreshAppPost(ctx, p, client, rc, botID, st.PostID, appIDFromArgv(st.Argv), res.Stdout, userID); err != nil {
+		if _, err := refreshAppPost(ctx, p, client, rc, botID, st.PostID, appIDFromArgv(st.Argv), res.Stdout, userID, ""); err != nil {
 			sendDialogEphemeral(client, botID, st.ChannelID, userID, err.Error())
 		}
 	default:
