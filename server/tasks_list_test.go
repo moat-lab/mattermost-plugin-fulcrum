@@ -398,8 +398,11 @@ func TestTasksList_RefreshActionWires(t *testing.T) {
 		t.Fatalf("single-page actions: got %d want 1", len(att.Actions))
 	}
 	a := att.Actions[0]
-	if a.Id != "tasks_list_refresh" {
+	if a.Id != mattermostActionID("tasks_list_refresh") {
 		t.Errorf("action id: %q", a.Id)
+	}
+	if got := a.Integration.Context[actionContextActionIDKey]; got != "tasks_list_refresh" {
+		t.Errorf("action context action_id: got %#v", got)
 	}
 	if a.Integration.URL != "/plugins/"+manifestID+"/action" {
 		t.Errorf("action url: %q", a.Integration.URL)
