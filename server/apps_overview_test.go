@@ -256,8 +256,11 @@ func TestAppsOverview_RefreshActionArgvWires(t *testing.T) {
 		t.Fatalf("apps-overview actions: got %d want 1 (Refresh only)", len(att.Actions))
 	}
 	a := att.Actions[0]
-	if a.Id != "apps_overview_refresh" {
+	if a.Id != mattermostActionID("apps_overview_refresh") {
 		t.Errorf("action id: %q", a.Id)
+	}
+	if got := a.Integration.Context[actionContextActionIDKey]; got != "apps_overview_refresh" {
+		t.Errorf("action context action_id: got %#v", got)
 	}
 	if a.Style != postActionStyleDefault {
 		t.Errorf("action style: %q", a.Style)

@@ -23,6 +23,10 @@ const (
 
 	// headerUserID is the Mattermost-set header on integration callbacks.
 	headerUserID = "Mattermost-User-Id"
+
+	// actionContextActionIDKey lets /action distinguish Refresh clicks from
+	// cross-view buttons after Mattermost posts the opaque action context back.
+	actionContextActionIDKey = "action_id"
 )
 
 // ServeHTTP routes plugin-local HTTP traffic. v1 exposes two endpoints:
@@ -78,6 +82,8 @@ func (p *Plugin) handleAction(w http.ResponseWriter, r *http.Request) {
 		writeActionError(w, err.Error())
 		return
 	}
+	bareArgv := argvFromContext(req.Context)
+	actionID := actionIDFromContext(req.Context)
 
 	client := p.getClient()
 	rc := p.getRexec()
@@ -92,7 +98,6 @@ func (p *Plugin) handleAction(w http.ResponseWriter, r *http.Request) {
 	// /dialog after the user submits. The original post stays untouched so
 	// the buttons remain visible if the user backs out.
 	if isDialogClick(req.Context) {
-		bareArgv := argvFromContext(req.Context)
 		dlg, dialogErr := buildOpenDialogRequest(req.TriggerID, bareArgv, req.PostID, req.ChannelID)
 		if dialogErr != nil {
 			writeActionError(w, "build dialog: "+dialogErr.Error())
@@ -102,7 +107,7 @@ func (p *Plugin) handleAction(w http.ResponseWriter, r *http.Request) {
 			writeActionError(w, "open dialog: "+err.Error())
 			return
 		}
-		writeActionOK(w)
+		writeActionOK(w, nil)
 		return
 	}
 
@@ -123,6 +128,13 @@ func (p *Plugin) handleAction(w http.ResponseWriter, r *http.Request) {
 		writeActionError(w, "render error: "+parseErr.Error())
 		return
 	}
+	client.Log.Info("fulcrum action callback received",
+		"callback_path", "/plugins/"+manifestID+r.URL.Path,
+		"action_id", actionID,
+		"verb", verb,
+		"post_id", req.PostID,
+		"channel_id", req.ChannelID,
+	)
 	// Envelope-shaped {code,message} business errors on a button-triggered
 	// verb leave the original card alone (§B.3.5 / §B.7.5): the entity state
 	// didn't change, the existing buttons are still valid, and only the
@@ -132,24 +144,26 @@ func (p *Plugin) handleAction(w http.ResponseWriter, r *http.Request) {
 	// callers fall through to the renderer for those codes.
 	if errCode != "" {
 		if verb == "apps.logs" && !appLogsEphemeralCodes[errCode] {
-			if err := applyEnvelopeToPostWithRequest(client, botID, req.PostID, res.Stdout, req.UserID, argvFromContext(req.Context)); err != nil {
+			post, err := applyEnvelopeToPostWithAction(client, botID, req.PostID, res.Stdout, req.UserID, bareArgv, actionID)
+			if err != nil {
 				writeActionError(w, err.Error())
 				return
 			}
-			writeActionOK(w)
+			writeActionOK(w, post)
 			return
 		}
 		if verb == "apps.logs" {
-			hints, argvAppID := extractAppLogsHints(argvFromContext(req.Context))
+			hints, argvAppID := extractAppLogsHints(bareArgv)
 			writeActionError(w, appLogsBusinessErrorMessage(errCode, errMsg, argvAppID, hints.RequestedService))
 			return
 		}
 		if verb == "tasks.diff" && !taskDiffEphemeralCodes[errCode] {
-			if err := applyEnvelopeToPostWithRequest(client, botID, req.PostID, res.Stdout, req.UserID, argvFromContext(req.Context)); err != nil {
+			post, err := applyEnvelopeToPostWithAction(client, botID, req.PostID, res.Stdout, req.UserID, bareArgv, actionID)
+			if err != nil {
 				writeActionError(w, err.Error())
 				return
 			}
-			writeActionOK(w)
+			writeActionOK(w, post)
 			return
 		}
 		if verb == "tasks.diff" {
@@ -161,11 +175,12 @@ func (p *Plugin) handleAction(w http.ResponseWriter, r *http.Request) {
 		// existing card so the user keeps the Refresh + Increase limit
 		// buttons in view.
 		if verb == "search" && !searchEphemeralCodes[errCode] {
-			if err := applyEnvelopeToPostWithRequest(client, botID, req.PostID, res.Stdout, req.UserID, argvFromContext(req.Context)); err != nil {
+			post, err := applyEnvelopeToPostWithAction(client, botID, req.PostID, res.Stdout, req.UserID, bareArgv, actionID)
+			if err != nil {
 				writeActionError(w, err.Error())
 				return
 			}
-			writeActionOK(w)
+			writeActionOK(w, post)
 			return
 		}
 		if verb == "search" {
@@ -177,11 +192,12 @@ func (p *Plugin) handleAction(w http.ResponseWriter, r *http.Request) {
 		// so the user keeps the Refresh button in view on the existing
 		// card.
 		if verb == "jobs" && !jobsEphemeralCodes[errCode] {
-			if err := applyEnvelopeToPostWithRequest(client, botID, req.PostID, res.Stdout, req.UserID, argvFromContext(req.Context)); err != nil {
+			post, err := applyEnvelopeToPostWithAction(client, botID, req.PostID, res.Stdout, req.UserID, bareArgv, actionID)
+			if err != nil {
 				writeActionError(w, err.Error())
 				return
 			}
-			writeActionOK(w)
+			writeActionOK(w, post)
 			return
 		}
 		if verb == "jobs" {
@@ -210,11 +226,12 @@ func (p *Plugin) handleAction(w http.ResponseWriter, r *http.Request) {
 	// (rare) case where the second CLI call fails — we still want to show
 	// the user something, just without the freshly-derived action set.
 	if taskMutationVerbs[verb] {
-		if err := refreshTaskPost(ctx, p, client, rc, botID, req.PostID, taskIDFromArgv(argvFromContext(req.Context)), res.Stdout); err != nil {
+		post, err := refreshTaskPost(ctx, p, client, rc, botID, req.PostID, taskIDFromArgv(bareArgv), res.Stdout, actionID)
+		if err != nil {
 			writeActionError(w, err.Error())
 			return
 		}
-		writeActionOK(w)
+		writeActionOK(w, post)
 		return
 	}
 
@@ -223,11 +240,12 @@ func (p *Plugin) handleAction(w http.ResponseWriter, r *http.Request) {
 	// apps.deploy and apps.rollback DO NOT round-trip — their per-verb
 	// result card carries the deployment_id the user needs to act on.
 	if appRoundTripMutationVerbs[verb] {
-		if err := refreshAppPost(ctx, p, client, rc, botID, req.PostID, appIDFromArgv(argvFromContext(req.Context)), res.Stdout, req.UserID); err != nil {
+		post, err := refreshAppPost(ctx, p, client, rc, botID, req.PostID, appIDFromArgv(bareArgv), res.Stdout, req.UserID, actionID)
+		if err != nil {
 			writeActionError(w, err.Error())
 			return
 		}
-		writeActionOK(w)
+		writeActionOK(w, post)
 		return
 	}
 
@@ -237,11 +255,12 @@ func (p *Plugin) handleAction(w http.ResponseWriter, r *http.Request) {
 	// passing the clicking user's id so the §B.7.1 "Initiated by" mention is
 	// the actor, not the bot. Argv is threaded through so apps.logs Refresh /
 	// Tail more re-renders carry the right tail / service hints (spike §B.8).
-	if err := applyEnvelopeToPostWithRequest(client, botID, req.PostID, res.Stdout, req.UserID, argvFromContext(req.Context)); err != nil {
+	post, err := applyEnvelopeToPostWithAction(client, botID, req.PostID, res.Stdout, req.UserID, bareArgv, actionID)
+	if err != nil {
 		writeActionError(w, err.Error())
 		return
 	}
-	writeActionOK(w)
+	writeActionOK(w, post)
 }
 
 // appsPayloadErrorMessage formats the ephemeral text shown to the clicking
@@ -294,6 +313,21 @@ func isDialogClick(ctx map[string]any) bool {
 	return ok && b
 }
 
+func actionIDFromContext(ctx map[string]any) string {
+	if ctx == nil {
+		return ""
+	}
+	v, ok := ctx[actionContextActionIDKey]
+	if !ok {
+		return ""
+	}
+	s, ok := v.(string)
+	if !ok {
+		return ""
+	}
+	return s
+}
+
 func actionArgv(ctx map[string]any) ([]string, error) {
 	if ctx == nil {
 		return nil, errors.New("missing context")
@@ -338,13 +372,20 @@ func applyEnvelopeToPost(client *pluginapi.Client, botID, postID string, stdout 
 // `requestArgv` carries the invoking argv so apps.logs renders pick up the
 // active --tail / --service hints (spike §B.8 — CLI envelope omits both).
 func applyEnvelopeToPostWithRequest(client *pluginapi.Client, botID, postID string, stdout []byte, actorUserID string, requestArgv []string) error {
-	att, renderErr := renderEnvelopeAtForRequest(stdout, time.Now(), actorUserID, requestArgv)
+	_, err := applyEnvelopeToPostWithAction(client, botID, postID, stdout, actorUserID, requestArgv, "")
+	return err
+}
+
+func applyEnvelopeToPostWithAction(client *pluginapi.Client, botID, postID string, stdout []byte, actorUserID string, requestArgv []string, actionID string) (*model.Post, error) {
+	now := time.Now()
+	att, renderErr := renderEnvelopeAtForRequest(stdout, now, actorUserID, requestArgv)
 	if renderErr != nil {
-		return fmt.Errorf("render error: %v", renderErr)
+		return nil, fmt.Errorf("render error: %v", renderErr)
 	}
+	applyActionFeedback(att, now, actionID)
 	post, getErr := client.Post.GetPost(postID)
 	if getErr != nil {
-		return fmt.Errorf("get post: %v", getErr)
+		return nil, fmt.Errorf("get post: %v", getErr)
 	}
 	// UpdatePost only succeeds because the original post's UserId is the
 	// bot — that is the entire reason this plugin exists; if this stops
@@ -352,14 +393,36 @@ func applyEnvelopeToPostWithRequest(client *pluginapi.Client, botID, postID stri
 	// is user-owned (legacy outgoing-webhook artifact) and the user needs
 	// to re-issue the slash command to get a real bot post.
 	if post.UserId != botID {
-		return errors.New("this post is not owned by the fulcrum bot (re-run the slash command)")
+		return nil, errors.New("this post is not owned by the fulcrum bot (re-run the slash command)")
 	}
 	post.Props = map[string]any{}
 	model.ParseSlackAttachment(post, []*model.SlackAttachment{att})
 	if err := client.Post.UpdatePost(post); err != nil {
-		return fmt.Errorf("update post: %v", err)
+		return nil, fmt.Errorf("update post: %v", err)
 	}
-	return nil
+	return post, nil
+}
+
+func applyActionFeedback(att *model.SlackAttachment, now time.Time, actionID string) {
+	if att == nil || !strings.Contains(actionID, "refresh") {
+		return
+	}
+	const markerPrefix = "action refreshed at "
+	marker := markerPrefix + now.UTC().Format(time.RFC3339)
+	if att.Footer == "" {
+		att.Footer = marker
+		return
+	}
+	if markerAt := strings.Index(att.Footer, markerPrefix); markerAt >= 0 {
+		prefix := strings.TrimRight(att.Footer[:markerAt], " ·")
+		if prefix == "" {
+			att.Footer = marker
+			return
+		}
+		att.Footer = prefix + " · " + marker
+		return
+	}
+	att.Footer += " · " + marker
 }
 
 // refreshTaskPost is the post-mutation round-trip (§B.3.4): re-invoke
@@ -369,19 +432,19 @@ func applyEnvelopeToPostWithRequest(client *pluginapi.Client, botID, postID stri
 // falls back to rendering the mutation envelope directly so the user at
 // least sees that something happened. Returns a non-nil error only when both
 // the round-trip and the fallback failed; callers surface that to the user.
-func refreshTaskPost(ctx context.Context, _ *Plugin, client *pluginapi.Client, rc *rexec.Client, botID, postID, taskID string, originalStdout []byte) error {
+func refreshTaskPost(ctx context.Context, _ *Plugin, client *pluginapi.Client, rc *rexec.Client, botID, postID, taskID string, originalStdout []byte, actionID string) (*model.Post, error) {
 	if taskID != "" {
 		refreshRes, refreshErr := rc.Run(ctx, prependFulcrumJSON([]string{"tasks", "get", taskID}), rexec.WithTimeout(rexecRunTimeout))
 		if refreshErr == nil && refreshRes.ExitCode == 0 {
 			// Task-detail render does not surface an actor; pass "" so
 			// applyEnvelopeToPost stays in lockstep with the legacy contract.
-			if err := applyEnvelopeToPost(client, botID, postID, refreshRes.Stdout, ""); err == nil {
-				return nil
+			if post, err := applyEnvelopeToPostWithAction(client, botID, postID, refreshRes.Stdout, "", nil, actionID); err == nil {
+				return post, nil
 			}
 			// fall through to the mutation envelope render below
 		}
 	}
-	return applyEnvelopeToPost(client, botID, postID, originalStdout, "")
+	return applyEnvelopeToPostWithAction(client, botID, postID, originalStdout, "", nil, actionID)
 }
 
 // refreshAppPost is the post-mutation round-trip for app verbs (§B.7.6):
@@ -393,33 +456,25 @@ func refreshTaskPost(ctx context.Context, _ *Plugin, client *pluginapi.Client, r
 // through only for the fallback path because apps.get does not surface an
 // "Initiated by" field; the round-trip render passes "" (apps.get has no
 // actor field).
-func refreshAppPost(ctx context.Context, _ *Plugin, client *pluginapi.Client, rc *rexec.Client, botID, postID, appID string, originalStdout []byte, actorUserID string) error {
+func refreshAppPost(ctx context.Context, _ *Plugin, client *pluginapi.Client, rc *rexec.Client, botID, postID, appID string, originalStdout []byte, actorUserID string, actionID string) (*model.Post, error) {
 	if appID != "" {
 		refreshRes, refreshErr := rc.Run(ctx, prependFulcrumJSON([]string{"apps", "get", appID}), rexec.WithTimeout(rexecRunTimeout))
 		if refreshErr == nil && refreshRes.ExitCode == 0 {
-			if err := applyEnvelopeToPost(client, botID, postID, refreshRes.Stdout, ""); err == nil {
-				return nil
+			if post, err := applyEnvelopeToPostWithAction(client, botID, postID, refreshRes.Stdout, "", nil, actionID); err == nil {
+				return post, nil
 			}
 			// fall through to the mutation envelope render below
 		}
 	}
-	return applyEnvelopeToPost(client, botID, postID, originalStdout, actorUserID)
+	return applyEnvelopeToPostWithAction(client, botID, postID, originalStdout, actorUserID, nil, actionID)
 }
 
-type actionResponse struct {
-	Update *struct{} `json:"update,omitempty"`
-	// EphemeralText surfaces an error to the clicking user without
-	// touching the original post. Mattermost recognizes this field on
-	// integration responses.
-	EphemeralText string `json:"ephemeral_text,omitempty"`
-}
-
-func writeActionOK(w http.ResponseWriter) {
+func writeActionOK(w http.ResponseWriter, post *model.Post) {
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(actionResponse{Update: &struct{}{}})
+	_ = json.NewEncoder(w).Encode(model.PostActionIntegrationResponse{Update: post})
 }
 
 func writeActionError(w http.ResponseWriter, text string) {
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(actionResponse{EphemeralText: text})
+	_ = json.NewEncoder(w).Encode(model.PostActionIntegrationResponse{EphemeralText: text})
 }

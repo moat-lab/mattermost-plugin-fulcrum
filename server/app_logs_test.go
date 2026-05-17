@@ -128,7 +128,7 @@ func TestRenderAppLogs_ServiceScoped(t *testing.T) {
 		t.Errorf("footer: %q", att.Footer)
 	}
 	for _, act := range att.Actions {
-		if act.Id == "app_logs_back" {
+		if act.Integration.Context[actionContextActionIDKey] == "app_logs_back" {
 			continue
 		}
 		argvList, ok := act.Integration.Context[actionContextArgvKey].([]any)
@@ -238,7 +238,7 @@ func TestRenderAppLogs_TailMoreDoubles_AndCeiling(t *testing.T) {
 					Argv []any
 				}
 				for _, a := range att.Actions {
-					if a.Id == "app_logs_tail_more" {
+					if a.Integration.Context[actionContextActionIDKey] == "app_logs_tail_more" {
 						raw, _ := a.Integration.Context[actionContextArgvKey].([]any)
 						tailMore = &struct{ Argv []any }{Argv: raw}
 					}
