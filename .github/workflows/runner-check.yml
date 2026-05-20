@@ -1,0 +1,48 @@
+name: runner-check
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/release.yml"
+      - ".github/workflows/runner-check.yml"
+      - "go.mod"
+      - "go.sum"
+      - "Makefile"
+      - "plugin.json"
+      - "server/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  runner-check:
+    runs-on: [self-hosted, vctcn, linux, netbird, vctcn-runner]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: Verify runner toolchain
+        run: |
+          set -euo pipefail
+          gh --version
+          go version
+
+      - name: Build plugin bundle
+        run: make dist
+
+      - name: Locate bundle
+        run: |
+          set -euo pipefail
+          BUNDLE="$(ls dist/fulcrum-*.tar.gz)"
+          sha256sum "${BUNDLE}"
