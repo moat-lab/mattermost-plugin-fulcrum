@@ -18,8 +18,6 @@ permissions:
 jobs:
   runner-check:
     runs-on: [self-hosted, vctcn, linux, netbird, vctcn-runner]
-    container:
-      image: catthehacker/ubuntu:full-24.04
     defaults:
       run:
         shell: bash
