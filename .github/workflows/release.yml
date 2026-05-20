@@ -11,6 +11,9 @@ permissions:
 jobs:
   release:
     runs-on: [self-hosted, vctcn, linux, netbird, vctcn-runner]
+    defaults:
+      run:
+        shell: bash
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -21,6 +24,12 @@ jobs:
           go-version-file: go.mod
           cache: true
           cache-dependency-path: go.sum
+
+      - name: Verify runner toolchain
+        run: |
+          set -euo pipefail
+          gh --version
+          go version
 
       - name: Verify tag matches plugin.json version
         run: |
