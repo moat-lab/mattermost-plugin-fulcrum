@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to verify/publish (defaults to v<plugin.json version>)"
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -41,16 +47,25 @@ jobs:
           gh --version
           go version
 
-      - name: Verify tag matches plugin.json version
+      - name: Resolve release tag
+        id: release
         run: |
           set -euo pipefail
           MANIFEST_VERSION="$(awk -F'"' '/"version"/ {print $4; exit}' plugin.json)"
-          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ] && [ -n "${{ inputs.tag }}" ]; then
+            RELEASE_TAG="${{ inputs.tag }}"
+          elif [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            RELEASE_TAG="${GITHUB_REF_NAME}"
+          else
+            RELEASE_TAG="v${MANIFEST_VERSION}"
+          fi
+          TAG_VERSION="${RELEASE_TAG#v}"
           echo "manifest=${MANIFEST_VERSION} tag=${TAG_VERSION}"
           if [ "${MANIFEST_VERSION}" != "${TAG_VERSION}" ]; then
-            echo "::error::tag ${GITHUB_REF_NAME} does not match plugin.json version ${MANIFEST_VERSION}" >&2
+            echo "::error::tag ${RELEASE_TAG} does not match plugin.json version ${MANIFEST_VERSION}" >&2
             exit 1
           fi
+          echo "tag=${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
 
       - name: Build plugin bundle
         run: make dist
@@ -64,14 +79,23 @@ jobs:
           echo "name=$(basename "${BUNDLE}")" >> "$GITHUB_OUTPUT"
           sha256sum "${BUNDLE}" | tee "${BUNDLE}.sha256"
 
-      - name: Create GitHub release
+      - name: Create or update GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
         run: |
           set -euo pipefail
-          gh release create "${GITHUB_REF_NAME}" \
-            "${{ steps.bundle.outputs.path }}" \
-            "${{ steps.bundle.outputs.path }}.sha256" \
-            --repo "${GITHUB_REPOSITORY}" \
-            --title "${GITHUB_REF_NAME}" \
-            --generate-notes
+          if gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release upload "${RELEASE_TAG}" \
+              "${{ steps.bundle.outputs.path }}" \
+              "${{ steps.bundle.outputs.path }}.sha256" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --clobber
+          else
+            gh release create "${RELEASE_TAG}" \
+              "${{ steps.bundle.outputs.path }}" \
+              "${{ steps.bundle.outputs.path }}.sha256" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --title "${RELEASE_TAG}" \
+              --generate-notes
+          fi
