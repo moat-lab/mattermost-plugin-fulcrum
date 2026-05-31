@@ -18,6 +18,8 @@ permissions:
 jobs:
   runner-check:
     runs-on: [self-hosted, vctcn, linux, netbird, vctcn-runner]
+    container:
+      image: catthehacker/ubuntu:act-24.04
     defaults:
       run:
         shell: bash
@@ -31,6 +33,14 @@ jobs:
           go-version-file: go.mod
           cache: true
           cache-dependency-path: go.sum
+
+      - name: Install GitHub CLI
+        run: |
+          set -euo pipefail
+          if ! command -v gh >/dev/null 2>&1; then
+            apt-get update
+            apt-get install -y gh
+          fi
 
       - name: Verify runner toolchain
         run: |
